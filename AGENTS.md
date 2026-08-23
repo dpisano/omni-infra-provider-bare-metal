@@ -54,6 +54,13 @@ The image factory path is the production default.
 The provider asks the Image Factory for a schematic (`internal/provider/imagefactory/client.go`, `SchematicIPXEURL` with `agentMode=true`), forcing `talosVersion = AgentModeTalosVersion` and a fixed extension set of firmware extensions plus `siderolabs/metal-agent` with no version.
 The factory resolves `siderolabs/metal-agent` against its per-Talos-version official-extensions catalog and errors if the extension is not published for that Talos version.
 So the agent version served this way is whatever the extensions catalog pins for `AgentModeTalosVersion`, and advancing it means getting `AgentModeTalosVersion` onto a Talos version whose catalog pins the desired agent version, by waiting for such a catalog or bumping the setting to one.
+This is independent of the `talos-metal-agent` version in `go.mod`, which only supplies the agent's Go API and proto to the provider.
+
+The factory's official-extensions catalog is architecture-independent, since the factory fetches the extension manifest with a hardcoded amd64 platform, so the same extension list resolves for every target architecture.
+The architecture-specific step is pulling each extension image for the requested platform, which fails loudly rather than silently skipping when an extension has no variant for that architecture.
+The `agentModeExtensions` list is therefore served as-is for arm64 and agent mode boots there without change, even though the list is x86-oriented.
+Two of its entries, `siderolabs/i915-ucode` and `siderolabs/amdgpu-firmware`, are stale names that no longer appear in the catalog and only keep working because the factory rewrites them through its own extension-name alias map.
+The cost of the list not being architecture-aware is that the arm64 agent-mode initramfs carries about 17 MB of x86 CPU microcode that an ARM kernel ignores, roughly 15% of its size, which matters on every netboot of a slow or bandwidth-constrained machine.
 
 The local boot-assets path is for dev and airgap and is enabled by `--use-local-boot-assets`.
 The boot-assets image is baked into the provider image at `/assets` at build time, pinned in `.kres.yaml` as a `copyFrom` stage and copied in the generated `Dockerfile`.
