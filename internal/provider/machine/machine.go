@@ -26,6 +26,15 @@ const (
 	BootModeTalosDisk BootMode = "talos-disk"
 )
 
+// IsManuallyPowered returns true if the machine has no BMC, so a human controls its power.
+//
+// The provider cannot read such a machine's power state, power it on or off, or set a one-time
+// boot device, so it relies on the machine being configured to network boot first and on the agent
+// for reboots.
+func IsManuallyPowered(bmcConfiguration *resources.BMCConfiguration) bool {
+	return bmcConfiguration != nil && bmcConfiguration.TypedSpec().Value.Manual != nil
+}
+
 // IsInstalled returns true if the machine is installed.
 func IsInstalled(infraMachine *infra.Machine, wipeStatus *resources.WipeStatus) bool {
 	if infraMachine == nil {
@@ -52,8 +61,25 @@ func RequiresWipe(infraMachine *infra.Machine, wipeStatus *resources.WipeStatus)
 	return infraMachine.TypedSpec().Value.WipeId != wipeStatus.TypedSpec().Value.LastWipeId
 }
 
+// BootOptions tunes how the required boot mode is decided.
+type BootOptions struct {
+	// AlwaysNetboot keeps serving Talos over the network to an installed machine, instead of
+	// handing it off to boot from its disk.
+	//
+	// It is meant for machines whose firmware cannot boot the installed system, such as a
+	// Raspberry Pi, whose installed disk lacks the board's bootloader because Omni installs Talos
+	// without a board overlay. The disk still holds the machine's state, only the kernel and
+	// initramfs come from the provider, which also keeps the provider in control of every boot.
+	//
+	// The cost is that the provider becomes a hard dependency of every boot: while it is down, a
+	// machine that reboots does not come back up.
+	AlwaysNetboot bool
+}
+
 // RequiredBootMode returns the required boot mode for the machine.
-func RequiredBootMode(infraMachine *infra.Machine, bmcConfiguration *resources.BMCConfiguration, wipeStatus *resources.WipeStatus, logger *zap.Logger) BootMode {
+func RequiredBootMode(infraMachine *infra.Machine, bmcConfiguration *resources.BMCConfiguration, wipeStatus *resources.WipeStatus,
+	options BootOptions, logger *zap.Logger,
+) BootMode {
 	installed := IsInstalled(infraMachine, wipeStatus)
 	requiresWipe := RequiresWipe(infraMachine, wipeStatus)
 	acceptanceStatus := omnispecs.InfraMachineConfigSpec_PENDING
@@ -76,10 +102,11 @@ func RequiredBootMode(infraMachine *infra.Machine, bmcConfiguration *resources.B
 
 	switch {
 	case rejected:
+		// a rejected machine is left alone, so it is handed off to its disk even under AlwaysNetboot
 		requiredBootMode = BootModeTalosDisk
 	case bootIntoAgentMode:
 		requiredBootMode = BootModeAgentPXE
-	case installed:
+	case installed && !options.AlwaysNetboot:
 		requiredBootMode = BootModeTalosDisk
 	default:
 		requiredBootMode = BootModeTalosPXE
@@ -89,6 +116,7 @@ func RequiredBootMode(infraMachine *infra.Machine, bmcConfiguration *resources.B
 		zap.Bool("infra_machine_tearing_down", infraMachineTearingDown),
 		zap.Bool("requires_power_mgmt_config", requiresPowerMgmtConfig),
 		zap.Bool("installed", installed),
+		zap.Bool("always_netboot", options.AlwaysNetboot),
 		zap.Stringer("acceptance_status", acceptanceStatus),
 		zap.String("required_boot_mode", string(requiredBootMode)),
 	).Debug("determined boot mode")

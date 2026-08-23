@@ -19,6 +19,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/siderolabs/omni-infra-provider-bare-metal/api/specs"
+	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/bmc"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/bmc/pxe"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/machine"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/meta"
@@ -35,12 +36,15 @@ type PowerOperationController = qtransform.QController[*infra.Machine, *resource
 // NewPowerOperationController creates a new PowerOperationController.
 //
 //nolint:dupl
-func NewPowerOperationController(nowFunc NowFunc, bmcClientFactory BMCClientFactory, minRebootInterval time.Duration, pxeBootMode pxe.BootMode) *PowerOperationController {
+func NewPowerOperationController(nowFunc NowFunc, bmcClientFactory BMCClientFactory, minRebootInterval time.Duration,
+	pxeBootMode pxe.BootMode, bootOptions machine.BootOptions,
+) *PowerOperationController {
 	helper := &powerOperationControllerHelper{
 		nowFunc:           nowFunc,
 		bmcClientFactory:  bmcClientFactory,
 		minRebootInterval: minRebootInterval,
 		pxeBootMode:       pxeBootMode,
+		bootOptions:       bootOptions,
 	}
 
 	return qtransform.NewQController(
@@ -62,10 +66,30 @@ func NewPowerOperationController(nowFunc NowFunc, bmcClientFactory BMCClientFact
 	)
 }
 
+// isManuallyPowered reports whether the machine's power is controlled by a human rather than the
+// provider, which is the case when it has no BMC.
+//
+// There is nothing for the provider to do for such a machine: issuing power commands would only
+// fail. It logs what a human would have to do instead, so an operator can see a machine is waiting.
+func isManuallyPowered(bmcClient bmc.Client, requiresPowerOn, powerOffActive bool, logger *zap.Logger) bool {
+	capabilities := bmcClient.Capabilities()
+
+	if capabilities.PowerControl && capabilities.PowerState {
+		return false
+	}
+
+	if requiresPowerOn && !powerOffActive {
+		logger.Info("machine has no BMC and is needed, power it on manually if it is off")
+	}
+
+	return true
+}
+
 type powerOperationControllerHelper struct {
 	bmcClientFactory  BMCClientFactory
 	nowFunc           NowFunc
 	pxeBootMode       pxe.BootMode
+	bootOptions       machine.BootOptions
 	minRebootInterval time.Duration
 }
 
@@ -130,6 +154,10 @@ func (helper *powerOperationControllerHelper) transform(ctx context.Context, r c
 
 	defer util.LogCloseContext(ctx, bmcClient, logger)
 
+	if isManuallyPowered(bmcClient, requiresPowerOn, powerOffActive, logger) {
+		return xerrors.NewTaggedf[qtransform.SkipReconcileTag]("machine power management is manual")
+	}
+
 	isPoweredOn, err := bmcClient.IsPoweredOn(ctx)
 	if err != nil {
 		return err
@@ -143,7 +171,7 @@ func (helper *powerOperationControllerHelper) transform(ctx context.Context, r c
 	case !isPoweredOn && !powerOffActive && (requiresPowerOn || preferredPowerState == omnispecs.InfraMachineSpec_POWER_STATE_ON):
 		logger.Debug("power on machine")
 
-		requiredBootMode := machine.RequiredBootMode(infraMachine, bmcConfiguration, wipeStatus, logger)
+		requiredBootMode := machine.RequiredBootMode(infraMachine, bmcConfiguration, wipeStatus, helper.bootOptions, logger)
 		if machine.RequiresPXEBoot(requiredBootMode) {
 			if err = bmcClient.SetPXEBootOnce(ctx, helper.pxeBootMode); err != nil {
 				return err

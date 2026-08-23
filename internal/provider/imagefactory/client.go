@@ -14,6 +14,9 @@ import (
 	"go.uber.org/zap"
 )
 
+// archArm64 is the arm64 value the iPXE handler passes down, matching iPXE's ${buildarch}.
+const archArm64 = "arm64"
+
 var agentModeExtensions = []string{
 	// include all firmware extensions
 	"siderolabs/amd-ucode",
@@ -27,6 +30,36 @@ var agentModeExtensions = []string{
 	"siderolabs/realtek-firmware",
 	// include the agent extension itself
 	"siderolabs/metal-agent",
+}
+
+// agentModeExtensionsArm64 is the agent-mode extension set for arm64 machines.
+//
+// Every firmware extension in the amd64 set above is for hardware that does not appear on an arm64
+// board: Intel and AMD CPU microcode, Intel integrated graphics microcode, AMD GPU firmware, and
+// the firmware for server network cards. The factory publishes arm64 variants of all of them, but
+// those either carry the x86 payloads verbatim or are near empty shells, so on arm64 they are
+// transferred on every netboot for nothing. The CPU microcode alone is about 17 MB, which the
+// factory prepends to the initramfs as an uncompressed early cpio archive.
+//
+// Realtek firmware is kept because USB Ethernet adapters on those chipsets are a common way to give
+// a board a second network interface, and agent mode is useless to a machine that cannot reach the
+// network.
+//
+// Note that this is deliberately narrower than what an arm64 server might need: an Ampere class
+// machine with a Chelsio or QLogic card would not get its network firmware here.
+var agentModeExtensionsArm64 = []string{
+	"siderolabs/realtek-firmware",
+	// include the agent extension itself
+	"siderolabs/metal-agent",
+}
+
+// agentModeExtensionsForArch returns the agent-mode extension set to request for the given architecture.
+func agentModeExtensionsForArch(arch string) []string {
+	if arch == archArm64 {
+		return agentModeExtensionsArm64
+	}
+
+	return agentModeExtensions
 }
 
 // Client is an image factory client.
@@ -72,7 +105,7 @@ func (c *Client) SchematicIPXEURL(ctx context.Context, agentMode bool, talosVers
 	if agentMode {
 		talosVersion = c.agentModeTalosVersion
 
-		extensions = agentModeExtensions
+		extensions = agentModeExtensionsForArch(arch)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)

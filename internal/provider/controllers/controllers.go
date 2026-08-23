@@ -35,6 +35,7 @@ const (
 type AgentClient interface {
 	GetPowerManagement(ctx context.Context, id string) (*agentpb.GetPowerManagementResponse, error)
 	SetPowerManagement(ctx context.Context, id string, req *agentpb.SetPowerManagementRequest) error
+	Reboot(ctx context.Context, id string) error
 	WipeDisks(ctx context.Context, id string) error
 	AllConnectedMachines() map[string]struct{}
 	IsAccessible(ctx context.Context, machineID string) (bool, error)

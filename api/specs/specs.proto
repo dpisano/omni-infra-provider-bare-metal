@@ -36,9 +36,18 @@ message BMCConfigurationSpec {
     string address = 1;
   }
 
+  // Manual marks a machine that has no BMC at all, so power is managed by a human.
+  //
+  // The provider never issues power commands for such a machine: it cannot read its power state,
+  // power it on or off, or set a one-time boot device. Reboots go through the agent instead,
+  // and the machine is expected to be configured to network boot first, so the provider still
+  // decides what it boots via the iPXE handler.
+  message Manual {}
+
   IPMI ipmi = 1;
   API api = 2;
   bool manually_configured = 3;
+  Manual manual = 4;
 }
 
 message MachineStatusSpec {

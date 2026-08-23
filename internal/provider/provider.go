@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 	"time"
@@ -41,9 +42,11 @@ import (
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/imagefactory"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/ip"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/ipxe"
+	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/machine"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/machineconfig"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/meta"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/resources"
+	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/rpi"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/server"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/tftp"
 	tls "github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/tls"
@@ -74,7 +77,7 @@ func New(options Options, logger *zap.Logger) *Provider {
 
 // Run runs the provider.
 //
-//nolint:gocyclo,cyclop,gocognit
+//nolint:gocyclo,cyclop,gocognit,maintidx
 func (p *Provider) Run(ctx context.Context) error {
 	pxeBootMode, err := pxe.ParseBootMode(p.options.IPMIPXEBootMode)
 	if err != nil {
@@ -172,6 +175,11 @@ func (p *Provider) Run(ctx context.Context) error {
 
 	pxeBootEventCh := make(chan controllers.PXEBootEvent, pxeBootEventChBuffer)
 
+	// shared by the iPXE handler and the controllers, so they all agree on what a machine should boot
+	bootOptions := machine.BootOptions{
+		AlwaysNetboot: p.options.AlwaysNetboot,
+	}
+
 	ipxeHandler, err := ipxe.NewHandler(
 		imageFactoryClient, machineConfig, omniState, pxeBootEventCh,
 		ipxe.HandlerOptions{
@@ -182,6 +190,7 @@ func (p *Provider) Run(ctx context.Context) error {
 			BootAssetsPath:      p.options.BootAssetsPath,
 			AgentTestMode:       p.options.AgentTestMode,
 			BootFromDiskMethod:  p.options.BootFromDiskMethod,
+			Boot:                bootOptions,
 		},
 		p.logger.With(zap.String("component", "ipxe_handler")),
 	)
@@ -199,10 +208,15 @@ func (p *Provider) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to parse machine labels: %w", err)
 	}
 
+	bootFiles, err := p.bootFiles(ipxeHandler.PatchedFiles())
+	if err != nil {
+		return err
+	}
+
 	bmcClientFactory := bmc.NewClientFactory(bmc.ClientFactoryOptions{
 		RedfishOptions: p.options.Redfish,
 	})
-	tftpServer := tftp.NewServer(p.options.APIListenAddress, ipxeHandler.PatchedFiles(), p.logger.With(zap.String("component", "tftp_server")))
+	tftpServer := tftp.NewServer(p.options.APIListenAddress, bootFiles, p.logger.With(zap.String("component", "tftp_server")))
 	bmcAPIAddressReader := bmcapi.NewAddressReader(p.options.APIPowerMgmtStateDir)
 	agentClient := agent.NewClient(agentConnectionEventCh, p.options.AgentClient, p.logger.With(zap.String("component", "agent_client"))) //nolint:contextcheck // false positive
 
@@ -211,7 +225,7 @@ func (p *Provider) Run(ctx context.Context) error {
 		assetsDir = p.options.BootAssetsPath
 	}
 
-	srvr := server.New(ctx, p.options.APIListenAddress, p.options.APIPort, p.options.TLS.APIPort, assetsDir, certs, configHandler, ipxeHandler, ipxeHandler.PatchedFiles(),
+	srvr := server.New(ctx, p.options.APIListenAddress, p.options.APIPort, p.options.TLS.APIPort, assetsDir, certs, configHandler, ipxeHandler, bootFiles,
 		agentClient.TunnelServiceServer(), p.logger.With(zap.String("component", "server")))
 
 	healthCheckController, err := providercontrollers.NewProviderHealthStatusController(meta.ProviderID.String(), providercontrollers.ProviderHealthStatusOptions{})
@@ -226,9 +240,13 @@ func (p *Provider) Run(ctx context.Context) error {
 	for _, qController := range []controller.QController{
 		controllers.NewMachineStatusController(bmcClientFactory, agentClient, agentConnectionEventCh, pxeBootEventCh, 30*time.Second),
 		controllers.NewInfraMachineStatusController(parsedMachineLabels),
-		controllers.NewBMCConfigurationController(agentClient, bmcAPIAddressReader),
-		controllers.NewPowerOperationController(time.Now, bmcClientFactory, p.options.MinRebootInterval, pxeBootMode),
-		controllers.NewRebootStatusController(bmcClientFactory, p.options.MinRebootInterval, pxeBootMode, controllers.RebootStatusControllerOptions{}),
+		controllers.NewBMCConfigurationController(agentClient, bmcAPIAddressReader, controllers.BMCConfigurationControllerOptions{
+			AllowMachinesWithoutBMC: p.options.AllowMachinesWithoutBMC,
+		}),
+		controllers.NewPowerOperationController(time.Now, bmcClientFactory, p.options.MinRebootInterval, pxeBootMode, bootOptions),
+		controllers.NewRebootStatusController(bmcClientFactory, agentClient, p.options.MinRebootInterval, pxeBootMode, controllers.RebootStatusControllerOptions{
+			BootOptions: bootOptions,
+		}),
 		controllers.NewWipeStatusController(agentClient),
 	} {
 		if err = cosiRuntime.RegisterQController(qController); err != nil {
@@ -445,6 +463,34 @@ func (p *Provider) clearState(ctx context.Context, st state.State) error {
 	p.logger.Info("state cleared")
 
 	return nil
+}
+
+// bootFiles returns everything served over TFTP and under the HTTP /tftp/ path: the patched iPXE
+// binaries, plus the Raspberry Pi firmware when the operator supplied it.
+//
+// The two sets are merged rather than served separately because a Raspberry Pi fetches its firmware
+// from the same TFTP server that every other machine chainloads iPXE from.
+func (p *Provider) bootFiles(ipxeFiles map[string][]byte) (map[string][]byte, error) {
+	if p.options.RPiFirmwarePath == "" {
+		return ipxeFiles, nil
+	}
+
+	firmware, err := rpi.Load(p.options.RPiFirmwarePath, p.logger.With(zap.String("component", "rpi_firmware")))
+	if err != nil {
+		return nil, err
+	}
+
+	files := maps.Clone(ipxeFiles)
+
+	for name, contents := range firmware {
+		if _, conflict := files[name]; conflict {
+			return nil, fmt.Errorf("firmware file %q for Raspberry Pi collides with an iPXE boot file of the same name", name)
+		}
+
+		files[name] = contents
+	}
+
+	return files, nil
 }
 
 func (p *Provider) parseLabels() (map[string]string, error) {

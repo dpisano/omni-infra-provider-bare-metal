@@ -54,6 +54,19 @@ The image factory path is the production default.
 The provider asks the Image Factory for a schematic (`internal/provider/imagefactory/client.go`, `SchematicIPXEURL` with `agentMode=true`), forcing `talosVersion = AgentModeTalosVersion` and a fixed extension set of firmware extensions plus `siderolabs/metal-agent` with no version.
 The factory resolves `siderolabs/metal-agent` against its per-Talos-version official-extensions catalog and errors if the extension is not published for that Talos version.
 So the agent version served this way is whatever the extensions catalog pins for `AgentModeTalosVersion`, and advancing it means getting `AgentModeTalosVersion` onto a Talos version whose catalog pins the desired agent version, by waiting for such a catalog or bumping the setting to one.
+This is independent of the `talos-metal-agent` version in `go.mod`, which only supplies the agent's Go API and proto to the provider.
+
+The factory's official-extensions catalog is architecture-independent, since the factory fetches the extension manifest with a hardcoded amd64 platform, so the same extension list resolves for every target architecture.
+The architecture-specific step is pulling each extension image for the requested platform, which fails loudly rather than silently skipping when an extension has no variant for that architecture.
+The `agentModeExtensions` list is therefore served as-is for arm64 and agent mode boots there without change, even though the list is x86-oriented.
+Two of its entries, `siderolabs/i915-ucode` and `siderolabs/amdgpu-firmware`, are stale names that no longer appear in the catalog and only keep working because the factory rewrites them through its own extension-name alias map.
+The set is therefore chosen per architecture (`agentModeExtensionsForArch`), and arm64 gets its own much shorter list of just the agent and the Realtek firmware.
+Every firmware extension in the amd64 list is for hardware that does not appear on an arm64 board: Intel and AMD CPU microcode, Intel integrated graphics microcode, AMD GPU firmware, and the firmware for server network cards.
+The factory publishes arm64 variants of all of them, but those either carry the x86 payloads verbatim or are near empty shells, so on arm64 they would be transferred on every netboot for nothing.
+Dropping them takes an arm64 agent-mode initramfs from about 119 MB to about 88 MB, a quarter of its size, and most of that is the CPU microcode, which the factory prepends to the initramfs as an uncompressed early cpio archive of about 17 MB.
+
+The arm64 list is deliberately narrower than an arm64 server might need, since this provider's arm64 target is single board computers: an Ampere class machine with a Chelsio or QLogic card would not get its network firmware from agent mode.
+Widening it back out is a matter of adding entries to `agentModeExtensionsArm64`.
 
 The local boot-assets path is for dev and airgap and is enabled by `--use-local-boot-assets`.
 The boot-assets image is baked into the provider image at `/assets` at build time, pinned in `.kres.yaml` as a `copyFrom` stage and copied in the generated `Dockerfile`.
@@ -136,9 +149,51 @@ The most relevant for this repo's work:
 - `--image-factory-base-url` and `--image-factory-pxe-base-url` point at the factory.
 - `--secure-boot-enabled` serves a UKI, requires UEFI PXE mode, and rules out local boot assets.
 - `--boot-from-disk-method` picks how an installed machine boots from disk (`ipxe-exit`, `http-404`, or `ipxe-sanboot`), for firmware that handles the iPXE exit path differently.
+- `--allow-machines-without-bmc` accepts machines that have no BMC at all, see the section below.
+- `--always-netboot` never hands an installed machine off to its disk and serves it Talos over the network on every boot instead.
+- `--rpi-firmware-path` points at the Raspberry Pi boot files to serve over TFTP, see the section below.
 - The `--redfish-*` and `--ipmi-*` flags tune BMC behavior.
 - `--agent-test-mode` boots the agent with API-based power management for QEMU test machines.
 - The `--tls-*` flags choose between ephemeral auto-generated certs and persistent operator-supplied certs.
+
+## Machines without a BMC
+
+Some machines have no IPMI and no Redfish at all, so there is nothing to talk to out of band.
+Under `--allow-machines-without-bmc`, a machine whose agent reports no power management is recorded as manually powered (`BMCConfigurationSpec.Manual`) rather than rejected, which is what lets it become ready to use instead of being pinned to agent mode forever.
+
+BMC clients report capabilities (`bmc.Capabilities`), and callers check them before issuing an operation instead of calling and handling the failure.
+The manual client supports nothing, so the provider never reads such a machine's power state, powers it on or off, or sets a one-time boot device, and its power state is instead inferred from whether its agent answers.
+An unreachable agent is not taken as proof the machine is off, since it may be running Talos without the agent.
+
+Reboots resolve over the first channel that can carry them: the BMC when the machine has one, otherwise the agent, which only works while the machine runs in agent mode.
+A machine with neither is left alone for a human to power-cycle, and the controller decides that once and stops rather than retrying in a loop.
+Because a one-time boot device cannot be set for these machines, they must be configured to network boot first, which is what keeps the provider in control of what they boot.
+
+The natural companion is `--always-netboot`, which stops the provider from ever handing an installed machine off to its disk and serves it the cluster's Talos version over the network on every boot instead.
+It exists for machines whose firmware cannot boot the installed system, such as a Raspberry Pi, whose installed disk lacks the board's bootloader because Omni installs Talos without a board overlay.
+The disk still holds the machine's state, and only the kernel and initramfs come from the provider, which works because Talos ignores the `talos.config` kernel argument once a machine config exists in STATE.
+The cost is that the provider becomes a hard dependency of every boot, so while it is down a machine that reboots does not come back up.
+A rejected machine is still handed off to its disk under this flag, as a rejected machine is meant to be left alone.
+
+## Raspberry Pi network boot
+
+A Raspberry Pi does not network boot the way a PC does, so it takes an extra stage before the normal flow applies.
+Its on-board bootloader speaks just enough ProxyDHCP to find a TFTP server, fetches a fixed set of files by name, and runs the kernel `config.txt` names, which here is U-Boot.
+Only then does the board make an ordinary PXE request, advertising `UBOOT_ARM64`, which the DHCP proxy already answers with `snp-arm64.efi`, and from there everything behaves like any other arm64 machine.
+
+The first stage needs three things the rest of the provider does not.
+The DHCP proxy has to recognize the board, which it does by the OUI of its MAC address, because the Pi bootloader reports DHCP architecture 0, the same a legacy x86 BIOS reports, and a vendor class that real x86 PXE clients also send, so anything else would break x86 BIOS PXE booting.
+A Pi booting over a USB network adapter is therefore not recognized.
+The offer must carry the string `Raspberry Pi Boot` in its vendor specific information, encoded as the PXE boot menu dnsmasq emits for `pxe-service=0,"Raspberry Pi Boot"`, or the bootloader ignores the offer.
+The TFTP server has to tolerate the per-board directory the bootloader prefixes every request with, which is either its eight hex digit serial number or its MAC address, and which is matched narrowly so it cannot swallow a real path such as `arm64/snp.efi`.
+
+The boot files themselves are not shipped with the provider, since the GPU firmware is proprietary Broadcom code under the Raspberry Pi license rather than MPL-2.0.
+The operator populates a directory and points `--rpi-firmware-path` at it, and `hack/rpi` holds a `config.txt` to start from and a note on where each file comes from.
+Startup fails when a required file is missing, so a directory that would leave a board hanging is caught up front rather than when a board first tries to boot and silently hangs.
+
+Only the Raspberry Pi 4 and CM4 are supported.
+A Pi 3 additionally needs `bootcode.bin`, which on a Pi 4 lives in the on-board EEPROM.
+A Pi also needs `--always-netboot`, because Omni installs Talos without a board overlay, so the installed disk has no bootloader the Pi firmware can start.
 
 ## Development and testing
 

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
@@ -236,6 +237,13 @@ func validateDHCP(m *dhcpv4.DHCPv4) (fwtype Firmware, err error) {
 		return 0, fmt.Errorf("unsupported client arch: %v", xslices.Map(arches, func(a iana.Arch) string { return a.String() }))
 	}
 
+	// The Raspberry Pi bootloader announces itself as a legacy x86 BIOS client (architecture 0),
+	// so going by the architecture alone would hand an ARM board an x86 bootloader. Identify it by
+	// its MAC address instead, and let it drive its own boot chain from TFTP.
+	if fwtype == FirmwareX86PC && isRaspberryPi(m.ClientHWAddr) {
+		fwtype = FirmwareRPi
+	}
+
 	// Now, identify special sub-breeds of client firmware based on
 	// the user-class option. Note these only change the "firmware
 	// type", not the architecture we're reporting to Booters. We need
@@ -341,6 +349,17 @@ func OfferDHCP(req *dhcpv4.DHCPv4, apiAdvertiseAddress string, apiPort int, fwty
 	case FirmwareARMHTTP:
 		// This is completely standard HTTP-boot: just load a file from HTTP.
 		resp.UpdateOption(dhcpv4.OptBootFileName(fmt.Sprintf("http://%s/tftp/arm64/snp.efi", ipPort)))
+	case FirmwareRPi:
+		// The Raspberry Pi bootloader derives the file names it fetches itself and ignores the boot
+		// file name, so it only has to be pointed at the TFTP server. It does, however, refuse an
+		// offer whose vendor specific information does not carry the "Raspberry Pi Boot" string.
+		pxeOptions, pxeErr := raspberryPiBootPXEOptions(serverIP)
+		if pxeErr != nil {
+			return nil, pxeErr
+		}
+
+		resp.UpdateOption(dhcpv4.OptTFTPServerName(serverIP.String()))
+		resp.UpdateOption(dhcpv4.OptGeneric(dhcpv4.OptionVendorSpecificInformation, pxeOptions))
 	case FirmwareUnsupported:
 		fallthrough
 	default:
@@ -365,4 +384,80 @@ const (
 	FirmwareX86Ipxe                     // "Classic" x86 BIOS running iPXE (no UNDI support)
 	FirmwareX86HTTP                     // HTTP Boot X86
 	FirmwareARMHTTP                     // ARM64 HTTP Boot
+	FirmwareRPi                         // Raspberry Pi on-board bootloader
 )
+
+// raspberryPiOUIs are the MAC address prefixes assigned to Raspberry Pi.
+//
+// The Raspberry Pi bootloader cannot be told apart by its DHCP architecture, which is the same 0 a
+// legacy x86 BIOS reports, nor safely by its vendor class, which is a generic legacy PXE string
+// that real x86 clients send too. The MAC address is what distinguishes it without breaking x86
+// BIOS PXE booting. A Pi booting over a USB network adapter is therefore not recognized.
+var raspberryPiOUIs = [][3]byte{
+	{0xb8, 0x27, 0xeb}, // Raspberry Pi Foundation
+	{0xdc, 0xa6, 0x32}, // Raspberry Pi Trading Ltd
+	{0xe4, 0x5f, 0x01}, // Raspberry Pi Trading Ltd
+	{0xd8, 0x3a, 0xdd}, // Raspberry Pi Trading Ltd
+	{0x28, 0xcd, 0xc1}, // Raspberry Pi Trading Ltd
+	{0x2c, 0xcf, 0x67}, // Raspberry Pi Ltd
+}
+
+func isRaspberryPi(hwAddr net.HardwareAddr) bool {
+	if len(hwAddr) < 3 {
+		return false
+	}
+
+	return slices.Contains(raspberryPiOUIs, [3]byte(hwAddr[:3]))
+}
+
+// raspberryPiBootMenuDescription is the string the Raspberry Pi bootloader looks for in the vendor
+// specific information before it accepts an offer.
+const raspberryPiBootMenuDescription = "Raspberry Pi Boot"
+
+// PXE vendor specific sub-option codes, from the PXE specification.
+const (
+	pxeDiscoveryControl = 6
+	pxeBootServers      = 8
+	pxeBootMenu         = 9
+	pxeMenuPrompt       = 10
+	pxeEnd              = 255
+)
+
+// raspberryPiBootPXEOptions builds the PXE boot menu the Raspberry Pi bootloader expects.
+//
+// It mirrors what dnsmasq emits for `pxe-service=0,"Raspberry Pi Boot"`, which is the configuration
+// the Raspberry Pi network boot documentation prescribes, so it both satisfies a strict PXE client
+// and carries the string the bootloader itself looks for.
+func raspberryPiBootPXEOptions(serverIP net.IP) ([]byte, error) {
+	serverIPv4 := serverIP.To4()
+	if serverIPv4 == nil {
+		return nil, fmt.Errorf("cannot offer a Raspberry Pi boot response over a non-IPv4 address: %s", serverIP)
+	}
+
+	description := []byte(raspberryPiBootMenuDescription)
+
+	// boot server list: server type 0, a single address, which is this provider
+	bootServers := make([]byte, 0, 3+net.IPv4len)
+	bootServers = append(bootServers, 0x00, 0x00, 0x01)
+	bootServers = append(bootServers, serverIPv4...)
+
+	// boot menu: server type 0, then the description
+	menu := make([]byte, 0, 3+len(description))
+	menu = append(menu, 0x00, 0x00, byte(len(description)))
+	menu = append(menu, description...)
+
+	// menu prompt: a zero timeout boots the only entry immediately, without waiting for a key press
+	prompt := make([]byte, 0, 1+len(description))
+	prompt = append(prompt, 0x00)
+	prompt = append(prompt, description...)
+
+	options := dhcpv4.Options{
+		pxeDiscoveryControl: []byte{0x03}, // use the boot server list, skip multicast and broadcast discovery
+		pxeBootServers:      bootServers,
+		pxeBootMenu:         menu,
+		pxeMenuPrompt:       prompt,
+	}
+
+	// Options.Marshal deliberately skips the End option, so terminate the sub-option space here
+	return append(options.ToBytes(), pxeEnd), nil
+}

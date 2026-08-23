@@ -33,11 +33,19 @@ type BMCAPIAddressReader interface {
 // BMCConfigurationController manages machine power management.
 type BMCConfigurationController = qtransform.QController[*infra.Machine, *resources.BMCConfiguration]
 
+// BMCConfigurationControllerOptions defines options for the BMCConfigurationController.
+type BMCConfigurationControllerOptions struct {
+	// AllowMachinesWithoutBMC makes a machine whose agent reports no power management at all
+	// be recorded as manually powered instead of being rejected.
+	AllowMachinesWithoutBMC bool
+}
+
 // NewBMCConfigurationController creates a new BMCConfigurationController.
-func NewBMCConfigurationController(agentClient AgentClient, bmcAPIAddressReader BMCAPIAddressReader) *BMCConfigurationController {
+func NewBMCConfigurationController(agentClient AgentClient, bmcAPIAddressReader BMCAPIAddressReader, options BMCConfigurationControllerOptions) *BMCConfigurationController {
 	helper := &bmcConfigurationControllerHelper{
 		agentClient:         agentClient,
 		bmcAPIAddressReader: bmcAPIAddressReader,
+		options:             options,
 	}
 
 	return qtransform.NewQController(
@@ -61,6 +69,7 @@ func NewBMCConfigurationController(agentClient AgentClient, bmcAPIAddressReader 
 type bmcConfigurationControllerHelper struct {
 	agentClient         AgentClient
 	bmcAPIAddressReader BMCAPIAddressReader
+	options             BMCConfigurationControllerOptions
 }
 
 func (helper *bmcConfigurationControllerHelper) transform(ctx context.Context, r controller.Reader, logger *zap.Logger,
@@ -99,7 +108,9 @@ func (helper *bmcConfigurationControllerHelper) transform(ctx context.Context, r
 	}
 
 	alreadyInitialized := !bmcConfiguration.TypedSpec().Value.ManuallyConfigured &&
-		(bmcConfiguration.TypedSpec().Value.Api != nil || bmcConfiguration.TypedSpec().Value.Ipmi != nil)
+		(bmcConfiguration.TypedSpec().Value.Api != nil ||
+			bmcConfiguration.TypedSpec().Value.Ipmi != nil ||
+			bmcConfiguration.TypedSpec().Value.Manual != nil)
 
 	if alreadyInitialized {
 		logger.Debug("bmc config already initialized, skip")
@@ -110,6 +121,15 @@ func (helper *bmcConfigurationControllerHelper) transform(ctx context.Context, r
 	powerManagementOnAgent, err := helper.agentClient.GetPowerManagement(ctx, id)
 	if err != nil {
 		return fmt.Errorf("failed to get power management information: %w", err)
+	}
+
+	if helper.reportsNoBMC(powerManagementOnAgent) {
+		logger.Info("machine reports no power management, record it as manually powered")
+
+		bmcConfiguration.TypedSpec().Value.ManuallyConfigured = false
+		bmcConfiguration.TypedSpec().Value.Manual = &specs.BMCConfigurationSpec_Manual{}
+
+		return nil
 	}
 
 	ipmiPassword, err := helper.ensurePowerManagementOnAgent(ctx, id, powerManagementOnAgent)
@@ -146,6 +166,18 @@ func (helper *bmcConfigurationControllerHelper) transform(ctx context.Context, r
 	return nil
 }
 
+// reportsNoBMC reports whether the machine has no BMC at all and the provider is allowed to accept it.
+//
+// Such a machine is recorded as manually powered so it can still become ready to use, rather than
+// failing here on every reconcile forever.
+func (helper *bmcConfigurationControllerHelper) reportsNoBMC(powerManagement *agentpb.GetPowerManagementResponse) bool {
+	if !helper.options.AllowMachinesWithoutBMC {
+		return false
+	}
+
+	return powerManagement.Api == nil && powerManagement.Ipmi == nil
+}
+
 func (helper *bmcConfigurationControllerHelper) storeUserProvidedBMCConfig(userConfig *infra.BMCConfig, bmcConfiguration *resources.BMCConfiguration, logger *zap.Logger) error {
 	config := userConfig.TypedSpec().Value.Config
 	if config == nil {
@@ -155,6 +187,9 @@ func (helper *bmcConfigurationControllerHelper) storeUserProvidedBMCConfig(userC
 	logger.Info("initialize BMC config from user-provided config")
 
 	bmcConfiguration.TypedSpec().Value.ManuallyConfigured = true
+
+	// the operator handed us real BMC credentials, so the machine is no longer manually powered
+	bmcConfiguration.TypedSpec().Value.Manual = nil
 
 	if config.Ipmi != nil {
 		port := config.Ipmi.Port
@@ -193,7 +228,8 @@ func (helper *bmcConfigurationControllerHelper) ensurePowerManagementOnAgent(ctx
 	powerManagement *agentpb.GetPowerManagementResponse,
 ) (ipmiPassword string, err error) {
 	if powerManagement.Api == nil && powerManagement.Ipmi == nil {
-		return "", fmt.Errorf("machine did not provide any power management information")
+		return "", fmt.Errorf("machine did not provide any power management information: " +
+			"if it genuinely has no BMC, start the provider with --allow-machines-without-bmc")
 	}
 
 	var (

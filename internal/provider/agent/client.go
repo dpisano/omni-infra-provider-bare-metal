@@ -104,6 +104,22 @@ func (c *Client) SetPowerManagement(ctx context.Context, id string, req *agentpb
 	return err
 }
 
+// Reboot reboots the machine with the given ID through its agent.
+//
+// This is the only way to reboot a machine that has no BMC, and it therefore only works while the
+// machine runs in agent mode.
+func (c *Client) Reboot(ctx context.Context, id string) error {
+	ctx, cancel := context.WithTimeout(ctx, c.options.CallTimeout)
+	defer cancel()
+
+	channel := c.tunnelHandler.KeyAsChannel(id)
+	cli := agentpb.NewAgentServiceClient(channel)
+
+	_, err := cli.Reboot(ctx, &agentpb.RebootRequest{})
+
+	return err
+}
+
 // WipeDisks wipes the disks on the server with the given ID.
 func (c *Client) WipeDisks(ctx context.Context, id string) error {
 	channel := c.tunnelHandler.KeyAsChannel(id)

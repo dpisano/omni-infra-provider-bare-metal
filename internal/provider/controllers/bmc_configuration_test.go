@@ -46,7 +46,7 @@ func TestBMCConfiguration(t *testing.T) {
 	withRuntime(
 		t,
 		func(_ context.Context, _ state.State, rt *runtime.Runtime, _ *zap.Logger) {
-			controller := controllers.NewBMCConfigurationController(agentClient, nil)
+			controller := controllers.NewBMCConfigurationController(agentClient, nil, controllers.BMCConfigurationControllerOptions{})
 			require.NoError(t, rt.RegisterQController(controller))
 		},
 
@@ -107,7 +107,73 @@ func TestBMCConfiguration(t *testing.T) {
 				assertion.Equal(uint32(5678), res.TypedSpec().Value.Ipmi.Port)
 				assertion.Equal(controllers.IPMIUsername, res.TypedSpec().Value.Ipmi.Username)
 				assertion.Equal(setPowerMgmtRequest.F2.Ipmi.Password, res.TypedSpec().Value.Ipmi.Password)
+
+				// the machine has a real BMC, so it is not manually powered
+				assertion.Nil(res.TypedSpec().Value.Manual)
 			})
 		},
 	)
+}
+
+// TestBMCConfigurationWithoutBMC covers a machine whose agent reports no power management at all.
+func TestBMCConfigurationWithoutBMC(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name                    string
+		allowMachinesWithoutBMC bool
+	}{
+		{name: "allowed", allowMachinesWithoutBMC: true},
+		{name: "not-allowed", allowMachinesWithoutBMC: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			var getPowerMgmtResponseMap containers.ConcurrentMap[string, *agentpb.GetPowerManagementResponse]
+
+			// neither IPMI nor API: the machine has no BMC
+			getPowerMgmtResponseMap.Set("test-machine", &agentpb.GetPowerManagementResponse{})
+
+			agentClient := &agentClientMock{getPowerMgmtResponseMap: &getPowerMgmtResponseMap}
+
+			withRuntime(
+				t,
+				func(_ context.Context, _ state.State, rt *runtime.Runtime, _ *zap.Logger) {
+					controller := controllers.NewBMCConfigurationController(agentClient, nil, controllers.BMCConfigurationControllerOptions{
+						AllowMachinesWithoutBMC: test.allowMachinesWithoutBMC,
+					})
+
+					require.NoError(t, rt.RegisterQController(controller))
+				},
+
+				func(ctx context.Context, st state.State, _ *runtime.Runtime, _ *zap.Logger) {
+					machineStatus := resources.NewMachineStatus("test-machine")
+
+					machineStatus.TypedSpec().Value.AgentAccessible = true
+
+					require.NoError(t, st.Create(ctx, machineStatus))
+
+					infraMachine := infra.NewMachine("test-machine")
+
+					infraMachine.TypedSpec().Value.AcceptanceStatus = omnispecs.InfraMachineConfigSpec_ACCEPTED
+
+					require.NoError(t, st.Create(ctx, infraMachine))
+
+					if !test.allowMachinesWithoutBMC {
+						// the controller keeps failing, so no BMC configuration is ever produced
+						rtestutils.AssertNoResource[*resources.BMCConfiguration](ctx, t, st, infraMachine.Metadata().ID())
+
+						return
+					}
+
+					rtestutils.AssertResource(ctx, t, st, infraMachine.Metadata().ID(), func(res *resources.BMCConfiguration, assertion *assert.Assertions) {
+						assertion.NotNil(res.TypedSpec().Value.Manual)
+						assertion.Nil(res.TypedSpec().Value.Ipmi)
+						assertion.Nil(res.TypedSpec().Value.Api)
+						assertion.False(res.TypedSpec().Value.ManuallyConfigured)
+					})
+				},
+			)
+		})
+	}
 }

@@ -28,6 +28,7 @@ import (
 // RebootStatusControllerOptions defines options for the RebootStatusController.
 type RebootStatusControllerOptions struct {
 	PostTransformFunc func()
+	BootOptions       machine.BootOptions
 }
 
 // RebootStatusController manages machine power management.
@@ -36,11 +37,14 @@ type RebootStatusController = qtransform.QController[*infra.Machine, *resources.
 // NewRebootStatusController creates a new RebootStatusController.
 //
 //nolint:dupl,cyclop
-func NewRebootStatusController(bmcClientFactory BMCClientFactory, minRebootInterval time.Duration, pxeBootMode pxe.BootMode, options RebootStatusControllerOptions) *RebootStatusController {
+func NewRebootStatusController(bmcClientFactory BMCClientFactory, agentClient AgentClient, minRebootInterval time.Duration,
+	pxeBootMode pxe.BootMode, options RebootStatusControllerOptions,
+) *RebootStatusController {
 	controllerName := meta.ProviderID.String() + ".RebootStatusController"
 
 	helper := &rebootStatusControllerHelper{
 		bmcClientFactory:  bmcClientFactory,
+		agentClient:       agentClient,
 		minRebootInterval: minRebootInterval,
 		pxeBootMode:       pxeBootMode,
 		controllerName:    controllerName,
@@ -69,6 +73,7 @@ func NewRebootStatusController(bmcClientFactory BMCClientFactory, minRebootInter
 
 type rebootStatusControllerHelper struct {
 	bmcClientFactory  BMCClientFactory
+	agentClient       AgentClient
 	options           RebootStatusControllerOptions
 	pxeBootMode       pxe.BootMode
 	controllerName    string
@@ -129,7 +134,7 @@ func (helper *rebootStatusControllerHelper) transform(ctx context.Context, r con
 		return xerrors.NewTaggedf[qtransform.SkipReconcileTag]("machine status not found")
 	}
 
-	requiredBootMode := machine.RequiredBootMode(infraMachine, bmcConfiguration, wipeStatus, logger)
+	requiredBootMode := machine.RequiredBootMode(infraMachine, bmcConfiguration, wipeStatus, helper.options.BootOptions, logger)
 	requiresPXEBoot := machine.RequiresPXEBoot(requiredBootMode)
 	requiresPowerOn := machine.RequiresPowerOn(infraMachine, wipeStatus)
 	agentAccessible := machineStatus.TypedSpec().Value.AgentAccessible
@@ -155,13 +160,13 @@ func (helper *rebootStatusControllerHelper) transform(ctx context.Context, r con
 	)
 
 	if requiresReboot {
-		return helper.reboot(ctx, infraMachine, bmcConfiguration, powerOperation, requiresPXEBoot, rebootStatus, logger)
+		return helper.reboot(ctx, infraMachine, bmcConfiguration, powerOperation, requiresPXEBoot, agentAccessible, rebootStatus, logger)
 	}
 
 	if rebootStatus.TypedSpec().Value.LastRebootId != infraMachine.TypedSpec().Value.RequestedRebootId {
 		logger.Debug("reboot machine by user request")
 
-		return helper.reboot(ctx, infraMachine, bmcConfiguration, powerOperation, requiresPXEBoot, rebootStatus, logger)
+		return helper.reboot(ctx, infraMachine, bmcConfiguration, powerOperation, requiresPXEBoot, agentAccessible, rebootStatus, logger)
 	}
 
 	return nil
@@ -219,7 +224,8 @@ func (helper *rebootStatusControllerHelper) attemptRebootOnRemoval(ctx context.C
 		return
 	}
 
-	if err := helper.reboot(ctx, infraMachine, bmcConfiguration, nil, true, nil, logger); err != nil {
+	// the agent is known to be unreachable here, as an accessible agent returns above
+	if err := helper.reboot(ctx, infraMachine, bmcConfiguration, nil, true, false, nil, logger); err != nil {
 		logger.Error("failed to reboot the removed infra machine", zap.Error(err))
 
 		return
@@ -230,7 +236,7 @@ func (helper *rebootStatusControllerHelper) attemptRebootOnRemoval(ctx context.C
 
 func (helper *rebootStatusControllerHelper) reboot(ctx context.Context,
 	infraMachine *infra.Machine, bmcConfiguration *resources.BMCConfiguration,
-	powerOperation *resources.PowerOperation, requiresPXEBoot bool, rebootStatus *resources.RebootStatus, logger *zap.Logger,
+	powerOperation *resources.PowerOperation, requiresPXEBoot, agentAccessible bool, rebootStatus *resources.RebootStatus, logger *zap.Logger,
 ) error {
 	// check if we are in the cooldown period
 	timeSinceLastPowerOn := getTimeSinceLastPowerOn(powerOperation, rebootStatus)
@@ -242,20 +248,7 @@ func (helper *rebootStatusControllerHelper) reboot(ctx context.Context,
 
 	logger.Info("reboot machine to switch boot mode")
 
-	bmcClient, err := helper.bmcClientFactory.GetClient(ctx, bmcConfiguration, logger)
-	if err != nil {
-		return err
-	}
-
-	defer util.LogCloseContext(ctx, bmcClient, logger)
-
-	if requiresPXEBoot {
-		if err = bmcClient.SetPXEBootOnce(ctx, helper.pxeBootMode); err != nil {
-			return err
-		}
-	}
-
-	if err = bmcClient.Reboot(ctx); err != nil {
+	if err := helper.rebootOverAnyChannel(ctx, infraMachine.Metadata().ID(), bmcConfiguration, requiresPXEBoot, agentAccessible, logger); err != nil {
 		return err
 	}
 
@@ -265,4 +258,44 @@ func (helper *rebootStatusControllerHelper) reboot(ctx context.Context,
 	}
 
 	return nil
+}
+
+// rebootOverAnyChannel reboots the machine over the first channel that can carry it.
+//
+// The BMC is preferred, as it works whatever the machine is running and can point the next boot at
+// the network. A machine without a BMC can only be rebooted by its agent, which means only while it
+// runs in agent mode; such a machine must be configured to network boot first, since there is no
+// way to set a one-time boot device for it. When neither channel is available the machine is left
+// alone for a human to power-cycle, rather than retried in a loop.
+func (helper *rebootStatusControllerHelper) rebootOverAnyChannel(ctx context.Context, id string,
+	bmcConfiguration *resources.BMCConfiguration, requiresPXEBoot, agentAccessible bool, logger *zap.Logger,
+) error {
+	bmcClient, err := helper.bmcClientFactory.GetClient(ctx, bmcConfiguration, logger)
+	if err != nil {
+		return err
+	}
+
+	defer util.LogCloseContext(ctx, bmcClient, logger)
+
+	capabilities := bmcClient.Capabilities()
+
+	if capabilities.Reboot {
+		if requiresPXEBoot && capabilities.BootDeviceControl {
+			if err = bmcClient.SetPXEBootOnce(ctx, helper.pxeBootMode); err != nil {
+				return err
+			}
+		}
+
+		return bmcClient.Reboot(ctx)
+	}
+
+	if agentAccessible {
+		logger.Info("machine has no BMC, reboot it over the agent")
+
+		return helper.agentClient.Reboot(ctx, id)
+	}
+
+	logger.Warn("machine has no BMC and its agent is not reachable, so the provider cannot reboot it: power-cycle it manually to let it continue")
+
+	return xerrors.NewTaggedf[qtransform.SkipReconcileTag]("machine requires a manual reboot")
 }

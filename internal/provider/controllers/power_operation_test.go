@@ -22,6 +22,7 @@ import (
 	"github.com/siderolabs/omni-infra-provider-bare-metal/api/specs"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/bmc/pxe"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/controllers"
+	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/machine"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/resources"
 )
 
@@ -47,7 +48,7 @@ func TestPowerOn(t *testing.T) {
 	withRuntime(
 		t,
 		func(_ context.Context, _ state.State, rt *runtime.Runtime, _ *zap.Logger) {
-			controller := controllers.NewPowerOperationController(nowFunc, bmcClientFactory, 0, pxeBootMode)
+			controller := controllers.NewPowerOperationController(nowFunc, bmcClientFactory, 0, pxeBootMode, machine.BootOptions{})
 
 			require.NoError(t, rt.RegisterQController(controller))
 		},
@@ -100,7 +101,7 @@ func TestPowerOnHonorsPowerOffRequest(t *testing.T) {
 	withRuntime(
 		t,
 		func(_ context.Context, _ state.State, rt *runtime.Runtime, _ *zap.Logger) {
-			controller := controllers.NewPowerOperationController(nowFunc, bmcClientFactory, 0, pxeBootMode)
+			controller := controllers.NewPowerOperationController(nowFunc, bmcClientFactory, 0, pxeBootMode, machine.BootOptions{})
 
 			require.NoError(t, rt.RegisterQController(controller))
 		},
@@ -151,7 +152,7 @@ func TestPowerOffRequestDoesNotPowerOffPoweredOnMachine(t *testing.T) {
 	withRuntime(
 		t,
 		func(_ context.Context, _ state.State, rt *runtime.Runtime, _ *zap.Logger) {
-			controller := controllers.NewPowerOperationController(nowFunc, bmcClientFactory, 0, pxeBootMode)
+			controller := controllers.NewPowerOperationController(nowFunc, bmcClientFactory, 0, pxeBootMode, machine.BootOptions{})
 
 			require.NoError(t, rt.RegisterQController(controller))
 		},
@@ -201,7 +202,7 @@ func TestPowerOffRequestBecomesInactiveAfterWipeIdChange(t *testing.T) {
 	withRuntime(
 		t,
 		func(_ context.Context, _ state.State, rt *runtime.Runtime, _ *zap.Logger) {
-			controller := controllers.NewPowerOperationController(nowFunc, bmcClientFactory, 0, pxeBootMode)
+			controller := controllers.NewPowerOperationController(nowFunc, bmcClientFactory, 0, pxeBootMode, machine.BootOptions{})
 
 			require.NoError(t, rt.RegisterQController(controller))
 		},

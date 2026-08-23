@@ -15,13 +15,14 @@ import (
 	"github.com/siderolabs/omni-infra-provider-bare-metal/api/specs"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/bmc/api"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/bmc/ipmi"
+	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/bmc/manual"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/bmc/pxe"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/bmc/redfish"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/resources"
 )
 
-// Client is the interface to interact with a single machine to send BMC commands to it.
-type Client interface {
+// backend is the raw BMC transport, implemented by the ipmi, redfish, api and manual packages.
+type backend interface {
 	Close(ctx context.Context) error
 	Reboot(ctx context.Context) error
 	IsPoweredOn(ctx context.Context) (bool, error)
@@ -29,6 +30,34 @@ type Client interface {
 	PowerOff(ctx context.Context) error
 	SetPXEBootOnce(ctx context.Context, mode pxe.BootMode) error
 	ResetBootDevice(ctx context.Context) error
+}
+
+// Capabilities describes what a BMC client can actually do for a machine.
+//
+// A machine with a real BMC supports everything. A machine without one supports nothing, and
+// callers must check here before issuing an operation rather than calling and handling the failure.
+type Capabilities struct {
+	// PowerState reports whether IsPoweredOn returns a meaningful answer.
+	PowerState bool
+	// PowerControl reports whether PowerOn and PowerOff are usable.
+	PowerControl bool
+	// BootDeviceControl reports whether SetPXEBootOnce and ResetBootDevice are usable.
+	BootDeviceControl bool
+	// Reboot reports whether Reboot is usable.
+	Reboot bool
+}
+
+// FullCapabilities is what a machine with a working BMC supports.
+func FullCapabilities() Capabilities {
+	return Capabilities{PowerState: true, PowerControl: true, BootDeviceControl: true, Reboot: true}
+}
+
+// Client is the interface to interact with a single machine to send BMC commands to it.
+type Client interface {
+	backend
+
+	// Capabilities reports which of the operations above are actually supported for this machine.
+	Capabilities() Capabilities
 }
 
 // ClientFactory is a factory to create BMC clients.
@@ -59,8 +88,17 @@ func (factory *ClientFactory) GetClient(ctx context.Context, config *resources.B
 
 	spec := config.TypedSpec().Value
 
-	if spec.Ipmi == nil && spec.Api == nil {
-		return nil, fmt.Errorf("invalid BMC config: both IPMI and API fields are nil")
+	if spec.Ipmi == nil && spec.Api == nil && spec.Manual == nil {
+		return nil, fmt.Errorf("invalid BMC config: IPMI, API and manual fields are all nil")
+	}
+
+	// A manual machine has no BMC, so it takes precedence: there is nothing to talk to,
+	// regardless of what else the config might carry.
+	if spec.Manual != nil {
+		return &loggingClient{
+			client: manual.NewClient(),
+			logger: logger.With(zap.String("bmc_client", "manual")),
+		}, nil
 	}
 
 	if spec.Api != nil {
@@ -69,7 +107,7 @@ func (factory *ClientFactory) GetClient(ctx context.Context, config *resources.B
 			return nil, err
 		}
 
-		return &loggingClient{client: apiClient, logger: logger.With(zap.String("bmc_client", "api"))}, nil
+		return &loggingClient{client: apiClient, capabilities: FullCapabilities(), logger: logger.With(zap.String("bmc_client", "api"))}, nil
 	}
 
 	useRedfish := factory.options.RedfishOptions.UseAlways || (factory.options.RedfishOptions.UseWhenAvailable && factory.redfishAvailable(ctx, spec.Ipmi, logger))
@@ -78,7 +116,7 @@ func (factory *ClientFactory) GetClient(ctx context.Context, config *resources.B
 		logger = logger.With(zap.String("bmc_client", "redfish"))
 		redfishClient := redfish.NewClient(factory.options.RedfishOptions, spec.Ipmi.Address, spec.Ipmi.Username, spec.Ipmi.Password, logger)
 
-		return &loggingClient{client: redfishClient, logger: logger}, nil
+		return &loggingClient{client: redfishClient, capabilities: FullCapabilities(), logger: logger}, nil
 	}
 
 	ipmiClient, err := ipmi.NewClient(ctx, spec.Ipmi)
@@ -86,7 +124,7 @@ func (factory *ClientFactory) GetClient(ctx context.Context, config *resources.B
 		return nil, err
 	}
 
-	return &loggingClient{client: ipmiClient, logger: logger.With(zap.String("bmc_client", "ipmi"))}, nil
+	return &loggingClient{client: ipmiClient, capabilities: FullCapabilities(), logger: logger.With(zap.String("bmc_client", "ipmi"))}, nil
 }
 
 func (factory *ClientFactory) redfishAvailable(ctx context.Context, ipmiInfo *specs.BMCConfigurationSpec_IPMI, logger *zap.Logger) bool {
@@ -120,8 +158,14 @@ func (factory *ClientFactory) redfishAvailable(ctx context.Context, ipmiInfo *sp
 }
 
 type loggingClient struct {
-	client Client
-	logger *zap.Logger
+	client       backend
+	logger       *zap.Logger
+	capabilities Capabilities
+}
+
+// Capabilities implements the Client interface.
+func (client *loggingClient) Capabilities() Capabilities {
+	return client.capabilities
 }
 
 func (client *loggingClient) Close(ctx context.Context) error {

@@ -30,6 +30,7 @@ type Options struct {
 	BootFromDiskMethod     string
 	ExtraMachineConfigPath string
 	BootAssetsPath         string
+	RPiFirmwarePath        string
 
 	MachineLabels []string
 
@@ -47,6 +48,8 @@ type Options struct {
 	DisableDHCPProxy          bool
 	DisableDHCPProxyBroadcast bool
 	SecureBootEnabled         bool
+	AllowMachinesWithoutBMC   bool
+	AlwaysNetboot             bool
 }
 
 // DefaultOptions returns the default provider options.

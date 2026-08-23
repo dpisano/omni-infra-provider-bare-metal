@@ -1,0 +1,16 @@
+# Raspberry Pi 4 / CM4 network boot configuration, read by the on-board bootloader over TFTP.
+#
+# This is a starting point: it hands the board straight to U-Boot, which then makes an ordinary
+# PXE request that the bare metal provider answers like any other machine. Adjust it to the board
+# and serial console you actually have.
+
+# Talos is 64-bit only.
+arm_64bit=1
+
+# The "kernel" the Pi bootloader loads is U-Boot, which does the real network boot.
+# The file must exist in the directory --rpi-firmware-path points at.
+kernel=u-boot.bin
+
+# Serial console on the 40-pin header, matching the console=ttyAMA0 kernel argument the provider
+# passes to Talos on arm64.
+enable_uart=1

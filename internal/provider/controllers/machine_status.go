@@ -22,6 +22,7 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 
 	"github.com/siderolabs/omni-infra-provider-bare-metal/api/specs"
+	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/machine"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/meta"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/resources"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/util"
@@ -271,7 +272,12 @@ func (ctrl *MachineStatusController) pollSingle(ctx context.Context, id resource
 	agentAccessible := false
 	powerState := specs.PowerState_POWER_STATE_UNKNOWN
 
-	if bmcConfiguration != nil {
+	// A machine without a BMC cannot be asked for its power state, so the agent is the only
+	// evidence available: if it answers, the machine is on. Silence is not proof it is off,
+	// as the machine may be running Talos without the agent, so that stays unknown.
+	manuallyPowered := machine.IsManuallyPowered(bmcConfiguration)
+
+	if bmcConfiguration != nil && !manuallyPowered {
 		var err error
 
 		powerState, err = ctrl.getPowerState(ctx, bmcConfiguration, logger)
@@ -287,6 +293,10 @@ func (ctrl *MachineStatusController) pollSingle(ctx context.Context, id resource
 		if err != nil {
 			logger.Error("failed to check agent connection", zap.Error(err))
 		}
+	}
+
+	if manuallyPowered && agentAccessible {
+		powerState = specs.PowerState_POWER_STATE_ON
 	}
 
 	return safe.WriterModifyWithResult(ctx, r, resources.NewMachineStatus(id), func(res *resources.MachineStatus) error {

@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 
@@ -72,6 +73,24 @@ func (s *Server) Run(ctx context.Context) error {
 	return eg.Wait()
 }
 
+// boardDirectory matches the per-board directory the Raspberry Pi bootloader prefixes its requests
+// with: either its serial number, which is eight hex digits, or its MAC address, depending on how
+// the board's TFTP prefix is configured.
+//
+// It is deliberately narrow so it cannot swallow a real path such as "arm64/snp.efi".
+var boardDirectory = regexp.MustCompile(`^([0-9a-fA-F]{8}|([0-9a-fA-F]{2}-){5}[0-9a-fA-F]{2})/`)
+
+// stripBoardDirectory removes a Raspberry Pi board directory prefix from a request, reporting
+// whether the name had one.
+func stripBoardDirectory(name string) (string, bool) {
+	prefix := boardDirectory.FindString(name)
+	if prefix == "" {
+		return name, false
+	}
+
+	return name[len(prefix):], true
+}
+
 // handleRead is called when a client starts file download from server.
 func (s *Server) handleRead(filename string, rf io.ReaderFrom) error {
 	s.logger.Info("file requested", zap.String("filename", filename))
@@ -80,6 +99,14 @@ func (s *Server) handleRead(filename string, rf io.ReaderFrom) error {
 	name := strings.TrimPrefix(path.Clean("/"+filename), "/")
 
 	contents, ok := s.files[name]
+	if !ok {
+		// The Raspberry Pi bootloader prefixes every request with a directory naming the board,
+		// e.g. "1a2b3c4d/start4.elf", so the same files are served under any such directory.
+		if stripped, isBoardDir := stripBoardDirectory(name); isBoardDir {
+			contents, ok = s.files[stripped]
+		}
+	}
+
 	if !ok {
 		s.logger.Error("file not found", zap.String("filename", filename))
 
