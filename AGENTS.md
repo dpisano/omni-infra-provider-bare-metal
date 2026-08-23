@@ -227,11 +227,16 @@ Every one of them only works inside the Sidero Labs infrastructure: the CI job w
 The encrypted `.secrets.yaml` those jobs read is deleted too, along with the `.sops.yaml` that configured it.
 Unlike workflow generation, sops generation can be turned off, and it has been: `common.SOPS` and the `ghaction.sops` setting of the `run-integration-test` step in `.kres.yaml` are both `false`, which is what stops kres emitting the decryption steps.
 Both are needed, as disabling either one alone still leaves some of them behind.
-Two hand-written workflows replace them, and they split publishing from checking.
+Four hand-written workflows replace them, and they split publishing from checking.
 
 `docker-image.yaml` builds the provider image through the same `make image-provider` target on a stock GitHub runner and pushes it to the repository owner's namespace on GHCR.
 It runs on commits landing on `main`, on pushes of a `v*` version tag, plus a manual trigger, so nothing is ever published from an unmerged branch.
-The image tag itself is never set by the workflow: it comes from the Makefile's `TAG`, `git describe --tag --always --dirty --match v[0-9]\*`, the same derivation upstream's own (deleted) CI workflow used, so a tag push yields an image tagged with exactly that release version (for example `v0.12.0`), and a plain commit to `main` yields the `v0.12.0-7-g63cc659`-style describe output.
+It is also callable through `workflow_call` with a `ref` input, which is how `upstream-release.yaml` builds a tag it has just created.
+The image tag itself is never set by the workflow: it comes from the Makefile's `TAG`, `git describe --tag --always --dirty --match v[0-9]\*`, the same derivation upstream's own (deleted) CI workflow used, so a build at a version tag yields an image tagged with exactly that version (for example `v0.12.0`), and a plain commit to `main` yields the `v0.12.0-7-g63cc659`-style describe output.
+
+That last part only holds while the repository carries tags, which is not automatic on a fork.
+Forking on GitHub copies no tags, so this fork had none, `git describe` fell back to `--always`, and every image it published up to that point was tagged with a bare commit SHA rather than a version.
+`upstream-release.yaml` is what puts a version tag on the fork, so the describe output becomes a version once it has run for the first time.
 
 `pull-request.yaml` is the check side and publishes nothing.
 It runs `make unit-tests`, and only if those pass does it build the image, for both architectures and with `PUSH=false`, so the image is proven to still build and then thrown away.
@@ -241,6 +246,13 @@ The build waits on the tests because building both architectures is by far the s
 It skips while an earlier sync pull request is still open, so syncs do not stack.
 GitHub does not run workflows on a pull request opened with `GITHUB_TOKEN`, so a sync pull request arrives with no checks on it, and closing and reopening it is what runs them.
 Read every sync rather than merging it on sight: this fork diverges in ways an upstream change can invalidate with no textual conflict at all, the clearest being the arm64 agent-mode extension list, which an extension added upstream will never reach.
+
+`upstream-release.yaml` cuts a release here whenever upstream cuts one, checking daily.
+This fork does not version independently, so a release is named after the upstream release it corresponds to, and upstream `v0.13.0` becomes `v0.13.0` here.
+The tag points at this fork's `main` rather than at upstream's release commit, so it covers upstream's release plus what this fork adds, and it is therefore a different commit than upstream's tag of the same name.
+It is only created once `main` actually contains the upstream release commit, which is checked with `git merge-base --is-ancestor`, so the release waits for a human to merge the sync pull request instead of naming itself after code the fork does not have.
+The image is built by calling `docker-image.yaml` at the new tag rather than by letting the tag push trigger it, because a tag pushed with `GITHUB_TOKEN` starts no workflow run, and building before publishing keeps a release from ever pointing at an image that does not exist.
+Creating the tag is skipped when it already exists, so a rerun after a failed image build reuses the tag and finishes the release rather than needing it cleaned up first.
 
 ## Reapplying the fork policy
 
