@@ -1,0 +1,73 @@
+# THIS FILE IS HAND WRITTEN, unlike the other workflows here, which kres generates.
+#
+# The kres-generated ci.yaml already builds and pushes this image, but only inside the Sidero Labs
+# infrastructure: it asks for a self-hosted runner group, a buildkit endpoint on their internal
+# network, and a sops key to decrypt .secrets.yaml. A fork has none of those, so that job never
+# produces an image here.
+#
+# This workflow builds the very same image, through the very same make target, on a stock GitHub
+# runner, and pushes it to this repository owner's namespace on GHCR.
+#
+# kres leaves files it does not generate alone, so `make rekres` does not touch this one. Do not
+# add it to .kres.yaml, or the two would fight over the same job.
+
+name: docker-image
+
+concurrency:
+  group: docker-image-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+'on':
+  push:
+    branches:
+      - main
+    tags:
+      - v*
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build and push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # version: v7.0.0
+        with:
+          # the image tag comes from `git describe`, so the full history and the tags are needed
+          fetch-depth: 0
+
+      - name: set up buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # version: v4.2.0
+
+      # The Dockerfile cross-compiles: its build stages run on the build platform and only the
+      # resulting binaries are copied into the per-architecture images, so QEMU is not needed to
+      # produce the arm64 image on an amd64 runner.
+      - name: derive the image namespace
+        # GHCR rejects an upper case namespace, and the owner login is otherwise used verbatim
+        run: echo "IMAGE_USERNAME=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
+      - name: log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # version: v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: build the provider image
+        env:
+          REGISTRY: ghcr.io
+          USERNAME: ${{ env.IMAGE_USERNAME }}
+          PLATFORM: linux/amd64,linux/arm64
+          # A pull request only has to prove the image still builds. It is not pushed, both because
+          # nothing should publish from an unmerged branch and because a pull request from a fork
+          # has no token that could write packages anyway.
+          PUSH: ${{ github.event_name != 'pull_request' }}
+        run: |
+          make image-provider
