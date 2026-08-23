@@ -168,7 +168,10 @@ To change them, edit `.kres.yaml` and run `make rekres`.
 ## GitHub workflows
 
 kres also generates GitHub workflows, but this fork does not use them and they have been deleted.
-Every one of them only works inside the Sidero Labs infrastructure: the CI job wants a self-hosted runner group, a buildkit endpoint on their internal network, and a sops key to decrypt `.secrets.yaml`, and the notification workflows post to their Slack.
+Every one of them only works inside the Sidero Labs infrastructure: the CI job wants a self-hosted runner group, a buildkit endpoint on their internal network, and a sops key to decrypt a secrets file, and the notification workflows post to their Slack.
+The encrypted `.secrets.yaml` those jobs read is deleted too, along with the `.sops.yaml` that configured it.
+Unlike workflow generation, sops generation can be turned off, and it has been: `common.SOPS` and the `ghaction.sops` setting of the `run-integration-test` step in `.kres.yaml` are both `false`, which is what stops kres emitting the decryption steps.
+Both are needed, as disabling either one alone still leaves some of them behind.
 The only workflow kept is `.github/workflows/docker-image.yaml`, which is hand written, builds the provider image through the same `make image-provider` target on a stock GitHub runner, and pushes it to the repository owner's namespace on GHCR.
 
 kres has no way to turn workflow generation off.

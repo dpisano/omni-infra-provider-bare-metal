@@ -1,9 +1,9 @@
 # THIS FILE IS HAND WRITTEN, unlike the other workflows here, which kres generates.
 #
-# The kres-generated ci.yaml already builds and pushes this image, but only inside the Sidero Labs
-# infrastructure: it asks for a self-hosted runner group, a buildkit endpoint on their internal
-# network, and a sops key to decrypt .secrets.yaml. A fork has none of those, so that job never
-# produces an image here.
+# The kres-generated CI, which this fork has deleted, built and pushed this image, but only inside
+# the Sidero Labs infrastructure: it asked for a self-hosted runner group, a buildkit endpoint on
+# their internal network, and a sops key to decrypt an encrypted secrets file. A fork has none of
+# those, so that job never produced an image here.
 #
 # This workflow builds the very same image, through the very same make target, on a stock GitHub
 # runner, and pushes it to this repository owner's namespace on GHCR.

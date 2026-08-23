@@ -103,7 +103,7 @@ spec:
         defaultValue: "false"
   ghaction:
     enabled: true
-    sops: true
+    sops: false # this fork has no encrypted secrets, see the GitHub workflows section of AGENTS.md
     parallelJob:
       name: integration-test
       runnerGroup: large
@@ -131,7 +131,9 @@ spec:
 ---
 kind: common.SOPS
 spec:
-  enabled: true
+  # Disabled along with the ghaction sops setting above, so kres stops emitting the decryption
+  # steps. Both are needed: neither alone removes them all. This fork has no encrypted secrets.
+  enabled: false
   config: |-
     creation_rules:
       - age: age1xrpa9ujxxcj2u2gzfrzv8mxak4rts94a6y60ypurv6rs5cpr4e4sg95f0k
