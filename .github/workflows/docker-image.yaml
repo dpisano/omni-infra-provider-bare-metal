@@ -1,0 +1,68 @@
+# THIS FILE IS HAND WRITTEN, unlike the other workflows here, which kres generates.
+#
+# The kres-generated CI, which this fork has deleted, built and pushed this image, but only inside
+# the Sidero Labs infrastructure: it asked for a self-hosted runner group, a buildkit endpoint on
+# their internal network, and a sops key to decrypt an encrypted secrets file. A fork has none of
+# those, so that job never produced an image here.
+#
+# This workflow builds the very same image, through the very same make target, on a stock GitHub
+# runner, and pushes it to this repository owner's namespace on GHCR.
+#
+# kres leaves files it does not generate alone, so `make rekres` does not touch this one. Do not
+# add it to .kres.yaml, or the two would fight over the same job.
+
+name: docker-image
+
+concurrency:
+  group: docker-image-${{ github.ref }}
+  # a push that supersedes an in-flight build makes that build's image obsolete before it exists
+  cancel-in-progress: true
+
+# Only commits landing on main produce an image. A pull request does not build, so the first proof
+# that a change still builds comes after it merges; run `make image-provider` locally to check
+# before then. Tags do not build either, as this fork does not cut releases.
+'on':
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build and push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # version: v7.0.0
+        with:
+          # the image tag comes from `git describe`, so the full history and the tags are needed
+          fetch-depth: 0
+
+      - name: set up buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # version: v4.2.0
+
+      - name: derive the image namespace
+        # GHCR rejects an upper case namespace, and the owner login is otherwise used verbatim
+        run: echo "IMAGE_USERNAME=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
+      - name: log in to ghcr.io
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # version: v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The Dockerfile cross-compiles: its build stages run on the build platform and only the
+      # resulting binaries are copied into the per-architecture images, so QEMU is not needed to
+      # produce the arm64 image on an amd64 runner.
+      - name: build and push the provider image
+        env:
+          REGISTRY: ghcr.io
+          USERNAME: ${{ env.IMAGE_USERNAME }}
+          PLATFORM: linux/amd64,linux/arm64
+          PUSH: "true"
+        run: |
+          make image-provider

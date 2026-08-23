@@ -1,0 +1,133 @@
+# THIS FILE IS HAND WRITTEN. kres does not generate it, and must not be told to: see the GitHub
+# workflows section of AGENTS.md.
+#
+# Opens a pull request merging siderolabs/omni-infra-provider-bare-metal into this fork, once a
+# week. It never merges anything itself: this fork carries deliberate divergence that an upstream
+# change can invalidate without producing any textual conflict at all, so a human reads every sync.
+#
+# Most of the conflicts are not interesting. Upstream keeps editing the workflows and secrets this
+# fork deletes, and every one of those is a modify/delete conflict resolved the same way every
+# time, so hack/fork-policy.sh reapplies the deletions and the merge continues. Anything still
+# conflicting after that is a real decision, and the job fails rather than opening a pull request
+# full of conflict markers that could be merged by accident.
+
+name: upstream-sync
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+'on':
+  schedule:
+    # Mondays, 06:00 UTC. Upstream moves roughly three commits a month, so weekly is ample.
+    - cron: '0 6 * * 1'
+  # GitHub disables scheduled workflows after 60 days without repository activity, and a sync can
+  # be wanted off-cadence, so it can always be started by hand.
+  workflow_dispatch:
+
+env:
+  UPSTREAM: https://github.com/siderolabs/omni-infra-provider-bare-metal.git
+
+jobs:
+  sync:
+    name: open an upstream sync pull request
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # version: v7.0.0
+        with:
+          # a merge needs the real history, not a shallow slice of it
+          fetch-depth: 0
+
+      - name: skip when a sync is already open
+        id: existing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          open_pr="$(gh pr list --state open --json number,headRefName \
+            --jq '[.[] | select(.headRefName | startswith("sync/upstream-"))] | .[0].number // empty')"
+
+          if [ -n "${open_pr}" ]; then
+            echo "sync pull request #${open_pr} is still open, leaving it alone" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: fetch upstream
+        if: steps.existing.outputs.skip == 'false'
+        id: fetch
+        run: |
+          git remote add upstream "${UPSTREAM}"
+          git fetch --quiet upstream main
+
+          behind="$(git rev-list --count HEAD..upstream/main)"
+          echo "behind=${behind}" >> "$GITHUB_OUTPUT"
+
+          if [ "${behind}" -eq 0 ]; then
+            echo "already up to date with upstream" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "${behind} upstream commit(s) to merge" | tee -a "$GITHUB_STEP_SUMMARY"
+            git log --oneline HEAD..upstream/main >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: merge upstream and reapply the fork policy
+        if: steps.existing.outputs.skip == 'false' && steps.fetch.outputs.behind != '0'
+        id: merge
+        run: |
+          branch="sync/upstream-$(date -u +%Y%m%d)-$(git rev-parse --short=8 upstream/main)"
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git checkout -b "${branch}"
+
+          # A conflict here is expected often enough that it is not a failure on its own.
+          git merge --no-edit --no-ff upstream/main || true
+
+          # Resolves the modify/delete conflicts on the files this fork deletes on purpose.
+          ./hack/fork-policy.sh
+
+          conflicts="$(git diff --name-only --diff-filter=U)"
+
+          if [ -n "${conflicts}" ]; then
+            {
+              echo
+              echo '### Conflicts need resolving by hand'
+              echo
+              echo '```'
+              echo "${conflicts}"
+              echo '```'
+              echo
+              echo "Run this locally: git fetch ${UPSTREAM} main && git merge FETCH_HEAD && ./hack/fork-policy.sh"
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            exit 1
+          fi
+
+          # A conflicted merge is left uncommitted, so committing it is what finishes the merge.
+          if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            git commit -qs --no-edit
+          elif ! git diff --cached --quiet; then
+            # the merge committed itself and the policy then removed something on top of it
+            git commit -qs -m "chore: reapply the fork policy after merging upstream"
+          fi
+
+          git push --quiet origin "${branch}"
+
+      - name: open the pull request
+        if: steps.existing.outputs.skip == 'false' && steps.fetch.outputs.behind != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.merge.outputs.branch }}
+          BEHIND: ${{ steps.fetch.outputs.behind }}
+        run: |
+          gh pr create \
+            --base main \
+            --head "${BRANCH}" \
+            --title "chore: merge ${BEHIND} upstream commit(s)" \
+            --body-file .github/upstream-sync-pr-body.md

@@ -1,0 +1,68 @@
+# THIS FILE IS HAND WRITTEN. kres does not generate it, and must not be told to: see the GitHub
+# workflows section of AGENTS.md.
+#
+# This is the check side of CI. It never publishes anything: docker-image.yaml does that, and only
+# for commits that have already landed on main. Here the image is built and thrown away, purely to
+# prove it still builds.
+#
+# The image build waits on the tests, because building both architectures is by far the slower half
+# and there is no point spending it on a change whose tests already fail.
+
+name: pull-request
+
+concurrency:
+  group: pull-request-${{ github.head_ref }}
+  cancel-in-progress: true
+
+'on':
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  unit-tests:
+    name: unit tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # version: v7.0.0
+
+      # the tests run inside the Dockerfile's unit-tests stage, so this needs a builder
+      - name: set up buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # version: v4.2.0
+
+      - name: run the unit tests
+        run: |
+          make unit-tests
+
+  image-build:
+    name: image builds
+    # only worth the two architecture build once the tests have passed
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    # no packages: write, as nothing is pushed from a pull request
+    permissions:
+      contents: read
+    steps:
+      - name: checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # version: v7.0.0
+        with:
+          # the image tag comes from `git describe`, so the full history and the tags are needed
+          fetch-depth: 0
+
+      - name: set up buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # version: v4.2.0
+
+      # Both architectures are built, the same pair main publishes, so an arm64-only break cannot
+      # slip through. QEMU is not needed: the Dockerfile's build stages run on the build platform
+      # and only the resulting binaries are copied into the per-architecture images.
+      - name: build the provider image
+        env:
+          REGISTRY: ghcr.io
+          PLATFORM: linux/amd64,linux/arm64
+          # built and discarded; nothing is published from an unmerged branch
+          PUSH: "false"
+        run: |
+          make image-provider
