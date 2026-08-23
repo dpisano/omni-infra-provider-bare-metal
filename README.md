@@ -76,11 +76,20 @@ This makes the arm64 agent mode initramfs roughly a quarter smaller.
 ## Container images
 
 Images are published to `ghcr.io/<repository owner>/omni-infra-provider-bare-metal`, built by the same `make image-provider` target used locally, for `linux/amd64` and `linux/arm64`.
-Every commit to `main` publishes one tagged with `git describe` output, such as `v0.12.0-7-g63cc659`, and pushing a `v*` tag publishes one tagged with exactly that version.
+Every commit to `main` publishes one, tagged with `git describe` output such as `v0.12.0-7-g63cc659`.
 A pull request builds the image without pushing it, only as a check that it still builds, after its unit tests pass.
 
+## Releases
+
+This fork does not version independently.
+It cuts a release whenever upstream cuts one, named after the upstream release it corresponds to, so upstream `v0.13.0` becomes `v0.13.0` here and the image is tagged `v0.13.0`.
+Because the tag points at this fork's `main`, the release carries upstream's release plus what this fork adds, and it is a different commit than upstream's tag of the same name.
+
+A release is only cut once `main` actually contains the upstream release commit, so it waits for the weekly upstream sync pull request to be reviewed and merged.
+Nothing merges automatically.
+
 Upstream's own CI is not used here, as every job in it needs Sidero Labs infrastructure to run.
-See the GitHub workflows section of [AGENTS.md](AGENTS.md) for what replaces it, including the weekly upstream sync.
+See the GitHub workflows section of [AGENTS.md](AGENTS.md) for what replaces it.
 
 ## Development
 

@@ -14,14 +14,21 @@
 name: docker-image
 
 concurrency:
-  group: docker-image-${{ github.ref }}
+  # Keyed on the ref being built, not the triggering ref, so a release build of a tag does not
+  # share a group with main and cancel it, or get cancelled by it.
+  group: docker-image-${{ inputs.ref || github.ref }}
   # a push that supersedes an in-flight build makes that build's image obsolete before it exists
   cancel-in-progress: true
 
-# Commits landing on main produce a :v0.12.0-7-g63cc659-style image, and pushing a version tag
-# produces one tagged with just the version, e.g. v0.12.0. Both come from the same `make
-# image-provider`, which derives IMAGE_TAG from `git describe --match v[0-9]*`, matching upstream's
-# own (deleted) CI workflow, so a tag build's image tag equals the release version.
+# The image tag is never set here. It comes from `make image-provider`, which derives IMAGE_TAG
+# from `git describe --tag --always --match v[0-9]*`, the same derivation upstream's own (deleted)
+# CI workflow used. So pushing a version tag produces an image tagged with exactly that version,
+# and a commit to main produces the :v0.12.0-7-g63cc659-style describe output.
+#
+# That only holds while the repository carries tags. A fork starts with none, and `git describe`
+# then falls back to --always and yields a bare commit SHA, so upstream-release.yaml is what puts
+# a version tag on this fork in the first place.
+#
 # A pull request does not build, so the first proof that a change still builds comes after it
 # merges; run `make image-provider` locally to check before then.
 'on':
@@ -31,6 +38,15 @@ concurrency:
     tags:
       - v*
   workflow_dispatch:
+  # upstream-release.yaml calls this after it tags a release, because a tag pushed with
+  # GITHUB_TOKEN deliberately does not trigger the push above.
+  workflow_call:
+    inputs:
+      ref:
+        description: the git ref to build, defaulting to the one the workflow was triggered on
+        type: string
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -45,6 +61,8 @@ jobs:
         with:
           # the image tag comes from `git describe`, so the full history and the tags are needed
           fetch-depth: 0
+          # empty for every trigger but workflow_call, where checkout treats it as "the default"
+          ref: ${{ inputs.ref }}
 
       - name: set up buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # version: v4.2.0
