@@ -32,6 +32,7 @@ func TestAgentModeExtensionsForArch(t *testing.T) {
 
 		assert.NotContains(t, extensions, "siderolabs/intel-ucode")
 		assert.NotContains(t, extensions, "siderolabs/amd-ucode")
+		assert.NotContains(t, extensions, "siderolabs/i915-ucode")
 
 		// the agent itself is the whole point, and the network firmware an arm64 server may need stays
 		assert.Contains(t, extensions, "siderolabs/metal-agent")

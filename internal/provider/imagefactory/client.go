@@ -18,19 +18,21 @@ import (
 // archArm64 is the arm64 value the iPXE handler passes down, matching iPXE's ${buildarch}.
 const archArm64 = "arm64"
 
-// x86MicrocodeExtensions carry CPU microcode that only an x86 CPU can load.
+// x86MicrocodeExtensions carry microcode that only x86 hardware can load: CPU microcode for Intel
+// and AMD processors, and the GuC and HuC microcode for Intel integrated graphics, which only ever
+// accompanies an Intel x86 CPU.
 //
-// The factory does publish arm64 variants of them, but those still carry the x86 payloads: together
-// they are about 17 MB of an arm64 agent-mode initramfs, roughly 15% of it, that an ARM kernel
-// ignores outright. They are dropped on arm64 so a slow or bandwidth-constrained machine does not
-// transfer them on every netboot.
+// The factory does publish arm64 variants of them, but those still carry the x86 payloads, which an
+// ARM kernel ignores outright. They are dropped on arm64 so a slow or bandwidth-constrained machine
+// does not transfer them on every netboot.
 //
-// Only the microcode is dropped. The remaining firmware extensions are for network and graphics
-// hardware that an arm64 server can genuinely have, so removing those could stop a machine from
+// Only microcode is dropped. The remaining firmware extensions are for network and graphics
+// hardware that an arm64 machine can genuinely have, so removing those could stop a machine from
 // reaching the network in agent mode.
 var x86MicrocodeExtensions = []string{
 	"siderolabs/amd-ucode",
 	"siderolabs/intel-ucode",
+	"siderolabs/i915-ucode",
 }
 
 var agentModeExtensions = []string{
