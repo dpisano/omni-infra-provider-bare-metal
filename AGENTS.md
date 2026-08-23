@@ -172,9 +172,14 @@ Every one of them only works inside the Sidero Labs infrastructure: the CI job w
 The encrypted `.secrets.yaml` those jobs read is deleted too, along with the `.sops.yaml` that configured it.
 Unlike workflow generation, sops generation can be turned off, and it has been: `common.SOPS` and the `ghaction.sops` setting of the `run-integration-test` step in `.kres.yaml` are both `false`, which is what stops kres emitting the decryption steps.
 Both are needed, as disabling either one alone still leaves some of them behind.
-The only workflow kept is `.github/workflows/docker-image.yaml`, which is hand written, builds the provider image through the same `make image-provider` target on a stock GitHub runner, and pushes it to the repository owner's namespace on GHCR.
-It runs only on commits landing on `main`, plus a manual trigger, so a pull request never builds an image and nothing is ever published from an unmerged branch.
-Nothing therefore proves a change still builds an image until it merges, so run `make image-provider` locally before merging anything that touches the build.
+Two hand-written workflows replace them, and they split publishing from checking.
+
+`docker-image.yaml` builds the provider image through the same `make image-provider` target on a stock GitHub runner and pushes it to the repository owner's namespace on GHCR.
+It runs only on commits landing on `main`, plus a manual trigger, so nothing is ever published from an unmerged branch.
+
+`pull-request.yaml` is the check side and publishes nothing.
+It runs `make unit-tests`, and only if those pass does it build the image, for both architectures and with `PUSH=false`, so the image is proven to still build and then thrown away.
+The build waits on the tests because building both architectures is by far the slower half, and there is no point spending it on a change whose tests already fail.
 
 kres has no way to turn workflow generation off.
 There is no CLI flag for it, and `enabled: false` on the `common.GHWorkflow` node in `.kres.yaml` is silently ignored, regenerating the workflow anyway and only dropping the runner group setting.
