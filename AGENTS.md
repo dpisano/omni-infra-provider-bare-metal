@@ -181,6 +181,19 @@ It runs only on commits landing on `main`, plus a manual trigger, so nothing is 
 It runs `make unit-tests`, and only if those pass does it build the image, for both architectures and with `PUSH=false`, so the image is proven to still build and then thrown away.
 The build waits on the tests because building both architectures is by far the slower half, and there is no point spending it on a change whose tests already fail.
 
+`upstream-sync.yaml` merges upstream into this fork weekly and opens a pull request, never merging anything itself.
+It skips while an earlier sync pull request is still open, so syncs do not stack.
+GitHub does not run workflows on a pull request opened with `GITHUB_TOKEN`, so a sync pull request arrives with no checks on it, and closing and reopening it is what runs them.
+Read every sync rather than merging it on sight: this fork diverges in ways an upstream change can invalidate with no textual conflict at all, the clearest being the arm64 agent-mode extension list, which an extension added upstream will never reach.
+
+## Reapplying the fork policy
+
+`hack/fork-policy.sh` deletes the files this fork deliberately removes, and exists because two things keep bringing them back.
+Merging upstream reintroduces any of them upstream has touched, as a modify/delete conflict git cannot settle on its own, not even with `-X ours`, which only resolves content hunks inside a file.
+`make rekres` regenerates every workflow, since kres offers no way to turn that off.
+The resolution is identical every time, so the sync workflow runs the script mid-merge and anything still conflicting afterwards is a real decision for a human.
+Run it after any local `make rekres` too.
+
 kres has no way to turn workflow generation off.
 There is no CLI flag for it, and `enabled: false` on the `common.GHWorkflow` node in `.kres.yaml` is silently ignored, regenerating the workflow anyway and only dropping the runner group setting.
 So `make rekres` resurrects every deleted workflow, and they have to be deleted again afterwards.
