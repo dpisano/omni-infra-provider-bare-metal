@@ -145,6 +145,7 @@ The most relevant for this repo's work:
 - `--boot-from-disk-method` picks how an installed machine boots from disk (`ipxe-exit`, `http-404`, or `ipxe-sanboot`), for firmware that handles the iPXE exit path differently.
 - `--allow-machines-without-bmc` accepts machines that have no BMC at all, see the section below.
 - `--always-netboot` never hands an installed machine off to its disk and serves it Talos over the network on every boot instead.
+- `--rpi-firmware-path` points at the Raspberry Pi boot files to serve over TFTP, see the section below.
 - The `--redfish-*` and `--ipmi-*` flags tune BMC behavior.
 - `--agent-test-mode` boots the agent with API-based power management for QEMU test machines.
 - The `--tls-*` flags choose between ephemeral auto-generated certs and persistent operator-supplied certs.
@@ -167,6 +168,26 @@ It exists for machines whose firmware cannot boot the installed system, such as 
 The disk still holds the machine's state, and only the kernel and initramfs come from the provider, which works because Talos ignores the `talos.config` kernel argument once a machine config exists in STATE.
 The cost is that the provider becomes a hard dependency of every boot, so while it is down a machine that reboots does not come back up.
 A rejected machine is still handed off to its disk under this flag, as a rejected machine is meant to be left alone.
+
+## Raspberry Pi network boot
+
+A Raspberry Pi does not network boot the way a PC does, so it takes an extra stage before the normal flow applies.
+Its on-board bootloader speaks just enough ProxyDHCP to find a TFTP server, fetches a fixed set of files by name, and runs the kernel `config.txt` names, which here is U-Boot.
+Only then does the board make an ordinary PXE request, advertising `UBOOT_ARM64`, which the DHCP proxy already answers with `snp-arm64.efi`, and from there everything behaves like any other arm64 machine.
+
+The first stage needs three things the rest of the provider does not.
+The DHCP proxy has to recognize the board, which it does by the OUI of its MAC address, because the Pi bootloader reports DHCP architecture 0, the same a legacy x86 BIOS reports, and a vendor class that real x86 PXE clients also send, so anything else would break x86 BIOS PXE booting.
+A Pi booting over a USB network adapter is therefore not recognized.
+The offer must carry the string `Raspberry Pi Boot` in its vendor specific information, encoded as the PXE boot menu dnsmasq emits for `pxe-service=0,"Raspberry Pi Boot"`, or the bootloader ignores the offer.
+The TFTP server has to tolerate the per-board directory the bootloader prefixes every request with, which is either its eight hex digit serial number or its MAC address, and which is matched narrowly so it cannot swallow a real path such as `arm64/snp.efi`.
+
+The boot files themselves are not shipped with the provider, since the GPU firmware is proprietary Broadcom code under the Raspberry Pi license rather than MPL-2.0.
+The operator populates a directory and points `--rpi-firmware-path` at it, and `hack/rpi` holds a `config.txt` to start from and a note on where each file comes from.
+Startup fails when a required file is missing, so a directory that would leave a board hanging is caught up front rather than when a board first tries to boot and silently hangs.
+
+Only the Raspberry Pi 4 and CM4 are supported.
+A Pi 3 additionally needs `bootcode.bin`, which on a Pi 4 lives in the on-board EEPROM.
+A Pi also needs `--always-netboot`, because Omni installs Talos without a board overlay, so the installed disk has no bootloader the Pi firmware can start.
 
 ## Development and testing
 

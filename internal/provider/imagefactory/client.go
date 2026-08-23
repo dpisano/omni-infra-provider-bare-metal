@@ -7,12 +7,31 @@ package imagefactory
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/siderolabs/image-factory/pkg/client"
 	"github.com/siderolabs/image-factory/pkg/schematic"
 	"go.uber.org/zap"
 )
+
+// archArm64 is the arm64 value the iPXE handler passes down, matching iPXE's ${buildarch}.
+const archArm64 = "arm64"
+
+// x86MicrocodeExtensions carry CPU microcode that only an x86 CPU can load.
+//
+// The factory does publish arm64 variants of them, but those still carry the x86 payloads: together
+// they are about 17 MB of an arm64 agent-mode initramfs, roughly 15% of it, that an ARM kernel
+// ignores outright. They are dropped on arm64 so a slow or bandwidth-constrained machine does not
+// transfer them on every netboot.
+//
+// Only the microcode is dropped. The remaining firmware extensions are for network and graphics
+// hardware that an arm64 server can genuinely have, so removing those could stop a machine from
+// reaching the network in agent mode.
+var x86MicrocodeExtensions = []string{
+	"siderolabs/amd-ucode",
+	"siderolabs/intel-ucode",
+}
 
 var agentModeExtensions = []string{
 	// include all firmware extensions
@@ -27,6 +46,17 @@ var agentModeExtensions = []string{
 	"siderolabs/realtek-firmware",
 	// include the agent extension itself
 	"siderolabs/metal-agent",
+}
+
+// agentModeExtensionsForArch returns the agent-mode extension set to request for the given architecture.
+func agentModeExtensionsForArch(arch string) []string {
+	if arch != archArm64 {
+		return agentModeExtensions
+	}
+
+	return slices.DeleteFunc(slices.Clone(agentModeExtensions), func(extension string) bool {
+		return slices.Contains(x86MicrocodeExtensions, extension)
+	})
 }
 
 // Client is an image factory client.
@@ -72,7 +102,7 @@ func (c *Client) SchematicIPXEURL(ctx context.Context, agentMode bool, talosVers
 	if agentMode {
 		talosVersion = c.agentModeTalosVersion
 
-		extensions = agentModeExtensions
+		extensions = agentModeExtensionsForArch(arch)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)

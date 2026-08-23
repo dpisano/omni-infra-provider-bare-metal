@@ -5,6 +5,7 @@
 package dhcp_test
 
 import (
+	"net"
 	"testing"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
@@ -182,4 +183,104 @@ func newNonPXEPacket(t *testing.T, msgType dhcpv4.MessageType) *dhcpv4.DHCPv4 {
 	require.NoError(t, err)
 
 	return pkt
+}
+
+// piMAC is a Raspberry Pi Trading Ltd MAC address, as a Pi is recognized by its OUI.
+var piMAC = []byte{0xdc, 0xa6, 0x32, 0x11, 0x22, 0x33}
+
+func newRPiPacket(t *testing.T, hwAddr []byte) *dhcpv4.DHCPv4 {
+	t.Helper()
+
+	pkt, err := dhcpv4.New(
+		dhcpv4.WithMessageType(dhcpv4.MessageTypeDiscover),
+		dhcpv4.WithHwAddr(hwAddr),
+	)
+	require.NoError(t, err)
+
+	// The Raspberry Pi bootloader reports architecture 0, the same a legacy x86 BIOS reports,
+	// and a vendor class that real x86 PXE clients also send.
+	pkt.UpdateOption(dhcpv4.OptClientArch(iana.INTEL_X86PC))
+	pkt.UpdateOption(dhcpv4.OptClassIdentifier("PXEClient:Arch:00000:UNDI:002001"))
+
+	return pkt
+}
+
+func TestValidateDHCPRaspberryPi(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a Raspberry Pi is told apart from a legacy x86 BIOS by its MAC", func(t *testing.T) {
+		t.Parallel()
+
+		fwtype, err := dhcp.ValidateDHCP(newRPiPacket(t, piMAC))
+		require.NoError(t, err)
+
+		assert.Equal(t, dhcp.FirmwareRPi, fwtype)
+	})
+
+	t.Run("an x86 BIOS client with the same architecture is untouched", func(t *testing.T) {
+		t.Parallel()
+
+		fwtype, err := dhcp.ValidateDHCP(newRPiPacket(t, []byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}))
+		require.NoError(t, err)
+
+		assert.Equal(t, dhcp.FirmwareX86PC, fwtype)
+	})
+
+	t.Run("a Raspberry Pi OUI does not override a real architecture", func(t *testing.T) {
+		t.Parallel()
+
+		// a Pi chainloaded into UEFI reports arm64 properly, and must keep getting the arm64 bootloader
+		pkt := newRPiPacket(t, piMAC)
+		pkt.UpdateOption(dhcpv4.OptClientArch(iana.EFI_ARM64))
+
+		fwtype, err := dhcp.ValidateDHCP(pkt)
+		require.NoError(t, err)
+
+		assert.Equal(t, dhcp.FirmwareARMEFI, fwtype)
+	})
+}
+
+func TestOfferDHCPRaspberryPi(t *testing.T) {
+	t.Parallel()
+
+	const (
+		apiAddr = "192.168.1.100"
+		apiPort = 50042
+	)
+
+	t.Run("the offer points at TFTP and carries the Raspberry Pi Boot string", func(t *testing.T) {
+		t.Parallel()
+
+		resp, err := dhcp.OfferDHCP(newRPiPacket(t, piMAC), apiAddr, apiPort, dhcp.FirmwareRPi, dhcp.Port67)
+		require.NoError(t, err)
+
+		assert.Equal(t, apiAddr, resp.TFTPServerName())
+
+		// the bootloader derives the file names itself, so no boot file is offered
+		assert.Empty(t, resp.BootFileNameOption())
+		assert.Empty(t, resp.BootFileName)
+
+		vendorOpts := resp.GetOneOption(dhcpv4.OptionVendorSpecificInformation)
+		require.NotEmpty(t, vendorOpts, "the Raspberry Pi bootloader refuses an offer without vendor specific information")
+
+		assert.Contains(t, string(vendorOpts), "Raspberry Pi Boot")
+
+		// the sub-option space must be well formed, and terminated with the End option
+		assert.Equal(t, byte(255), vendorOpts[len(vendorOpts)-1])
+
+		parsed := dhcpv4.Options{}
+		require.NoError(t, parsed.FromBytes(vendorOpts))
+
+		// the boot server list must point back at this provider
+		assert.Equal(t, append([]byte{0x00, 0x00, 0x01}, net.ParseIP(apiAddr).To4()...), parsed.Get(dhcpv4.GenericOptionCode(8)))
+	})
+
+	t.Run("an IPv6 advertise address is rejected rather than silently mis-encoded", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := dhcp.OfferDHCP(newRPiPacket(t, piMAC), "2001:db8::1", apiPort, dhcp.FirmwareRPi, dhcp.Port67)
+		require.Error(t, err)
+
+		assert.Contains(t, err.Error(), "non-IPv4")
+	})
 }

@@ -30,6 +30,7 @@ type Options struct {
 	BootFromDiskMethod     string
 	ExtraMachineConfigPath string
 	BootAssetsPath         string
+	RPiFirmwarePath        string
 
 	MachineLabels []string
 

@@ -148,6 +148,11 @@ func init() {
 		"Comma separated list of key=value pairs to be set to the machine. Example: key1=value1,key2,key3=value3")
 	rootCmd.Flags().BoolVar(&providerOptions.InsecureSkipTLSVerify, "insecure-skip-tls-verify", providerOptions.InsecureSkipTLSVerify,
 		"Skip TLS verification when connecting to the Omni API.")
+	rootCmd.Flags().StringVar(&providerOptions.RPiFirmwarePath, "rpi-firmware-path", providerOptions.RPiFirmwarePath,
+		"Directory holding the Raspberry Pi boot files to serve over TFTP, which a Raspberry Pi 4 or CM4 fetches before it can run U-Boot and make an ordinary PXE request. "+
+			"It must contain at least config.txt, start4.elf and fixup4.dat, plus the kernel config.txt names. "+
+			"The files are not shipped with the provider, as the GPU firmware is proprietary and not under this project's license. "+
+			"Leave empty to not serve them, in which case Raspberry Pi machines cannot network boot.")
 	rootCmd.Flags().BoolVar(&providerOptions.AlwaysNetboot, "always-netboot", providerOptions.AlwaysNetboot,
 		"Keep serving Talos over the network to an installed machine instead of handing it off to boot from its disk. "+
 			"This is for machines whose firmware cannot boot the installed system, such as a Raspberry Pi. "+
