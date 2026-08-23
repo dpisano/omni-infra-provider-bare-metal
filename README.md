@@ -3,6 +3,10 @@
 This repo contains the code for the Omni Bare Metal Infra Provider.
 If you would like to deploy the provider in your environment please [see the official documentation](https://omni.siderolabs.com/tutorials/setting-up-the-bare-metal-infrastructure-provider).
 
+This is a fork of [siderolabs/omni-infra-provider-bare-metal](https://github.com/siderolabs/omni-infra-provider-bare-metal).
+It adds support for [machines with no BMC](#machines-without-a-bmc), whose power a human controls, and for [Raspberry Pi network boot](#raspberry-pi-network-boot).
+Everything else works as upstream documents it.
+
 ## Requirements
 
 To run the provider, you need:
@@ -18,6 +22,65 @@ To run the provider, you need:
   Replace `bare-metal` with your desired provider ID.
 - A DHCP server: This provider runs a DHCP proxy to provide DHCP responses for iPXE boot, so a DHCP server must be running in the same network as the provider.
 - Access to an [Image Factory](https://www.talos.dev/v1.8/learn-more/image-factory/).
+
+## Machines without a BMC
+
+Some machines have no IPMI and no Redfish at all, so there is nothing for the provider to talk to out of band.
+By default the provider fails to configure one, and it never becomes ready to use, sitting in agent mode instead.
+Pass `--allow-machines-without-bmc` to record it as manually powered, which lets it join the pool like any other machine.
+
+What changes for such a machine:
+
+- **You power it on and off.**
+  The provider never does, so when Omni allocates the machine to a cluster it waits for you to turn it on.
+- **Its power state is inferred from whether its agent answers**, rather than read from a BMC.
+  An unreachable agent is not taken to mean the machine is off, since it may be running Talos without the agent.
+- **Reboots go over the agent**, which only works while the machine runs in agent mode.
+  A machine that needs rebooting outside agent mode is left for you to power-cycle by hand.
+- **It must be configured to network boot first** in its own firmware.
+  The provider cannot set a one-time boot device for it, so the boot order is the only thing keeping the provider in control of what it boots.
+
+Machines that do have a BMC keep using it, and the two kinds can be mixed in one deployment: the flag only changes what happens to a machine whose agent reports no power management.
+
+The natural companion is `--always-netboot`, which stops the provider from ever handing an installed machine off to its disk, and serves it the cluster's Talos version over the network on every boot instead.
+It is for machines whose firmware cannot boot the installed system, a Raspberry Pi being the case that needs it.
+The disk still holds the machine's state, and only the kernel and initramfs come from the provider.
+The cost is that the provider becomes a hard dependency of every boot: while it is down, a machine that reboots does not come back up.
+
+## Raspberry Pi network boot
+
+A Raspberry Pi does not network boot the way a PC does, so it takes an extra stage before the normal flow applies.
+Its on-board bootloader fetches a fixed set of files over TFTP by name and runs the kernel `config.txt` names, which here is U-Boot.
+Only then does the board make an ordinary PXE request, which the provider answers like any other arm64 machine.
+
+To boot one:
+
+1. Enable network boot in the board's EEPROM, ordered before the SD card.
+   This is a one-time setup done with `raspi-config` or `rpi-eeprom-config`.
+2. Populate a directory with the boot files and point `--rpi-firmware-path` at it.
+   See [`hack/rpi`](hack/rpi) for a `config.txt` to start from and where each file comes from.
+   These files are not shipped with the provider, as the GPU firmware is proprietary Broadcom code rather than MPL-2.0.
+   The provider refuses to start when a required file is missing, so a directory that would leave a board hanging is caught up front.
+3. Run the provider with `--always-netboot`, and with `--allow-machines-without-bmc` unless the board has some form of external power control.
+   `--always-netboot` is not optional here: Omni installs Talos without a board overlay, so the installed disk has no bootloader the Pi firmware can start.
+
+Only the Raspberry Pi 4 and CM4 are supported.
+A Pi 3 additionally needs `bootcode.bin`, which on a Pi 4 lives in the on-board EEPROM.
+
+A board is recognised by the OUI of its MAC address, because its bootloader is otherwise indistinguishable from a legacy x86 BIOS PXE client.
+A Pi booting over a USB network adapter is therefore not detected as one.
+
+Agent mode images for arm64 are built without the x86 hardware firmware extensions the amd64 images carry, none of which a Pi can use.
+This makes the arm64 agent mode initramfs roughly a quarter smaller.
+
+## Container images
+
+Images are published to `ghcr.io/<repository owner>/omni-infra-provider-bare-metal`, built by the same `make image-provider` target used locally, for `linux/amd64` and `linux/arm64`.
+Every commit to `main` publishes one tagged with `git describe` output, such as `v0.12.0-7-g63cc659`, and pushing a `v*` tag publishes one tagged with exactly that version.
+A pull request builds the image without pushing it, only as a check that it still builds, after its unit tests pass.
+
+Upstream's own CI is not used here, as every job in it needs Sidero Labs infrastructure to run.
+See the GitHub workflows section of [AGENTS.md](AGENTS.md) for what replaces it, including the weekly upstream sync.
 
 ## Development
 
