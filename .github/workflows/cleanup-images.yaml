@@ -1,0 +1,62 @@
+# THIS FILE IS HAND WRITTEN. kres does not generate it, and must not be told to: see the GitHub
+# workflows section of AGENTS.md.
+#
+# Every commit to main publishes an image, so the registry grows without bound. This prunes it
+# back weekly, keeping every release and the most recent builds.
+#
+# The work is in hack/prune-images.sh rather than inline here, so it can be dry run locally before
+# anyone trusts it with a delete. Read that script's header for why pruning these images is more
+# involved than deleting whatever is untagged.
+
+name: cleanup-images
+
+concurrency:
+  group: cleanup-images
+  # deleting the same version twice is a failure, not a no-op, so let a run finish
+  cancel-in-progress: false
+
+'on':
+  schedule:
+    # Mondays, 07:00 UTC, between the upstream sync and the release check.
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: how many builds to keep, on top of every release
+        type: string
+        required: false
+        default: '10'
+      dry_run:
+        description: list what would be deleted without deleting it
+        type: boolean
+        required: false
+        default: true
+
+jobs:
+  prune:
+    name: prune old image versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # deleting a package version needs write, and GITHUB_TOKEN can do it because the package is
+      # linked to this repository by having been pushed from it
+      packages: write
+    steps:
+      - name: checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # version: v7.0.0
+
+      - name: prune
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # a scheduled run passes no inputs, and has to be the real thing rather than a dry run
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          KEEP: ${{ inputs.keep || '10' }}
+        run: |
+          args=(--owner "${GITHUB_REPOSITORY_OWNER,,}" --keep "${KEEP}")
+
+          if [ "${DRY_RUN}" != "true" ]; then
+            args+=(--delete)
+          fi
+
+          ./hack/prune-images.sh "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"

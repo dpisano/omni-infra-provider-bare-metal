@@ -79,6 +79,9 @@ Images are published to `ghcr.io/<repository owner>/omni-infra-provider-bare-met
 Every commit to `main` publishes one, tagged with `git describe` output such as `v0.12.0-7-g63cc659`.
 A pull request builds the image without pushing it, only as a check that it still builds, after its unit tests pass.
 
+Old images are pruned weekly, keeping every release and the ten most recent builds.
+To see what would go without deleting anything, run `hack/prune-images.sh --owner <owner>`, which is a dry run unless given `--delete`.
+
 ## Releases
 
 This fork does not version independently.
