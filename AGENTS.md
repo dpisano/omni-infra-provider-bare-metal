@@ -227,7 +227,7 @@ Every one of them only works inside the Sidero Labs infrastructure: the CI job w
 The encrypted `.secrets.yaml` those jobs read is deleted too, along with the `.sops.yaml` that configured it.
 Unlike workflow generation, sops generation can be turned off, and it has been: `common.SOPS` and the `ghaction.sops` setting of the `run-integration-test` step in `.kres.yaml` are both `false`, which is what stops kres emitting the decryption steps.
 Both are needed, as disabling either one alone still leaves some of them behind.
-Four hand-written workflows replace them, and they split publishing from checking.
+Five hand-written workflows replace them, and they split publishing from checking.
 
 `docker-image.yaml` builds the provider image through the same `make image-provider` target on a stock GitHub runner and pushes it to the repository owner's namespace on GHCR.
 It runs on commits landing on `main`, on pushes of a `v*` version tag, plus a manual trigger, so nothing is ever published from an unmerged branch.
@@ -253,6 +253,17 @@ The tag points at this fork's `main` rather than at upstream's release commit, s
 It is only created once `main` actually contains the upstream release commit, which is checked with `git merge-base --is-ancestor`, so the release waits for a human to merge the sync pull request instead of naming itself after code the fork does not have.
 The image is built by calling `docker-image.yaml` at the new tag rather than by letting the tag push trigger it, because a tag pushed with `GITHUB_TOKEN` starts no workflow run, and building before publishing keeps a release from ever pointing at an image that does not exist.
 Creating the tag is skipped when it already exists, so a rerun after a failed image build reuses the tag and finishes the release rather than needing it cleaned up first.
+
+`cleanup-images.yaml` prunes the container registry weekly, running `hack/prune-images.sh`.
+Every commit to `main` publishes an image, so without it the registry grows without bound.
+It keeps every release, the ten most recent builds, and deletes the rest.
+
+Pruning these images is not the usual "delete whatever is untagged", and doing that would corrupt the registry rather than tidy it.
+The images are multi-architecture, so a tagged image is an OCI index that holds no layers itself and only references the per-architecture manifests, and those referenced manifests appear in the package version list as untagged versions.
+Deleting untagged versions on sight therefore destroys the architectures out from under every tag it leaves alone, and the tag still resolves while the pull fails.
+So the script reads the index of everything it keeps and keeps what that index references too.
+It fails closed in both directions: it refuses to run when nothing would be kept, which is what an unexpected API response looks like, and it aborts without deleting anything when an index it needs cannot be read.
+It is a dry run unless given `--delete`, which is worth using before trusting a change to the retention rules.
 
 ## Reapplying the fork policy
 
