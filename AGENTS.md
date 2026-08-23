@@ -60,9 +60,13 @@ The factory's official-extensions catalog is architecture-independent, since the
 The architecture-specific step is pulling each extension image for the requested platform, which fails loudly rather than silently skipping when an extension has no variant for that architecture.
 The `agentModeExtensions` list is therefore served as-is for arm64 and agent mode boots there without change, even though the list is x86-oriented.
 Two of its entries, `siderolabs/i915-ucode` and `siderolabs/amdgpu-firmware`, are stale names that no longer appear in the catalog and only keep working because the factory rewrites them through its own extension-name alias map.
-The list is therefore filtered by architecture rather than tailored per architecture: the `*-ucode` extensions are dropped on arm64, because their arm64 variants still carry the x86 payloads an ARM kernel ignores.
-Almost all of that saving comes from the CPU microcode, which the factory prepends to the initramfs as an uncompressed early cpio archive of about 17 MB, roughly 15% of an arm64 agent-mode initramfs; the Intel graphics microcode is only a couple of kilobytes on arm64.
-Everything else is kept, since the remaining firmware extensions are for network and graphics hardware an arm64 machine can genuinely have, and dropping those could stop a machine from reaching the network in agent mode.
+The set is therefore chosen per architecture (`agentModeExtensionsForArch`), and arm64 gets its own much shorter list of just the agent and the Realtek firmware.
+Every firmware extension in the amd64 list is for hardware that does not appear on an arm64 board: Intel and AMD CPU microcode, Intel integrated graphics microcode, AMD GPU firmware, and the firmware for server network cards.
+The factory publishes arm64 variants of all of them, but those either carry the x86 payloads verbatim or are near empty shells, so on arm64 they would be transferred on every netboot for nothing.
+Dropping them takes an arm64 agent-mode initramfs from about 119 MB to about 88 MB, a quarter of its size, and most of that is the CPU microcode, which the factory prepends to the initramfs as an uncompressed early cpio archive of about 17 MB.
+
+The arm64 list is deliberately narrower than an arm64 server might need, since this provider's arm64 target is single board computers: an Ampere class machine with a Chelsio or QLogic card would not get its network firmware from agent mode.
+Widening it back out is a matter of adding entries to `agentModeExtensionsArm64`.
 
 The local boot-assets path is for dev and airgap and is enabled by `--use-local-boot-assets`.
 The boot-assets image is baked into the provider image at `/assets` at build time, pinned in `.kres.yaml` as a `copyFrom` stage and copied in the generated `Dockerfile`.

@@ -6,6 +6,6 @@ package imagefactory
 
 var (
 	AgentModeExtensions        = agentModeExtensions
-	X86MicrocodeExtensions     = x86MicrocodeExtensions
+	AgentModeExtensionsArm64   = agentModeExtensionsArm64
 	AgentModeExtensionsForArch = agentModeExtensionsForArch
 )

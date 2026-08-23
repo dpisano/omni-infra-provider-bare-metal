@@ -7,7 +7,6 @@ package imagefactory
 import (
 	"context"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/siderolabs/image-factory/pkg/client"
@@ -17,23 +16,6 @@ import (
 
 // archArm64 is the arm64 value the iPXE handler passes down, matching iPXE's ${buildarch}.
 const archArm64 = "arm64"
-
-// x86MicrocodeExtensions carry microcode that only x86 hardware can load: CPU microcode for Intel
-// and AMD processors, and the GuC and HuC microcode for Intel integrated graphics, which only ever
-// accompanies an Intel x86 CPU.
-//
-// The factory does publish arm64 variants of them, but those still carry the x86 payloads, which an
-// ARM kernel ignores outright. They are dropped on arm64 so a slow or bandwidth-constrained machine
-// does not transfer them on every netboot.
-//
-// Only microcode is dropped. The remaining firmware extensions are for network and graphics
-// hardware that an arm64 machine can genuinely have, so removing those could stop a machine from
-// reaching the network in agent mode.
-var x86MicrocodeExtensions = []string{
-	"siderolabs/amd-ucode",
-	"siderolabs/intel-ucode",
-	"siderolabs/i915-ucode",
-}
 
 var agentModeExtensions = []string{
 	// include all firmware extensions
@@ -50,15 +32,34 @@ var agentModeExtensions = []string{
 	"siderolabs/metal-agent",
 }
 
+// agentModeExtensionsArm64 is the agent-mode extension set for arm64 machines.
+//
+// Every firmware extension in the amd64 set above is for hardware that does not appear on an arm64
+// board: Intel and AMD CPU microcode, Intel integrated graphics microcode, AMD GPU firmware, and
+// the firmware for server network cards. The factory publishes arm64 variants of all of them, but
+// those either carry the x86 payloads verbatim or are near empty shells, so on arm64 they are
+// transferred on every netboot for nothing. The CPU microcode alone is about 17 MB, which the
+// factory prepends to the initramfs as an uncompressed early cpio archive.
+//
+// Realtek firmware is kept because USB Ethernet adapters on those chipsets are a common way to give
+// a board a second network interface, and agent mode is useless to a machine that cannot reach the
+// network.
+//
+// Note that this is deliberately narrower than what an arm64 server might need: an Ampere class
+// machine with a Chelsio or QLogic card would not get its network firmware here.
+var agentModeExtensionsArm64 = []string{
+	"siderolabs/realtek-firmware",
+	// include the agent extension itself
+	"siderolabs/metal-agent",
+}
+
 // agentModeExtensionsForArch returns the agent-mode extension set to request for the given architecture.
 func agentModeExtensionsForArch(arch string) []string {
-	if arch != archArm64 {
-		return agentModeExtensions
+	if arch == archArm64 {
+		return agentModeExtensionsArm64
 	}
 
-	return slices.DeleteFunc(slices.Clone(agentModeExtensions), func(extension string) bool {
-		return slices.Contains(x86MicrocodeExtensions, extension)
-	})
+	return agentModeExtensions
 }
 
 // Client is an image factory client.

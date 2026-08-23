@@ -15,7 +15,7 @@ import (
 func TestAgentModeExtensionsForArch(t *testing.T) {
 	t.Parallel()
 
-	t.Run("amd64 gets every extension, microcode included", func(t *testing.T) {
+	t.Run("amd64 gets every extension, firmware and microcode included", func(t *testing.T) {
 		t.Parallel()
 
 		extensions := imagefactory.AgentModeExtensionsForArch("amd64")
@@ -23,36 +23,45 @@ func TestAgentModeExtensionsForArch(t *testing.T) {
 		assert.Equal(t, imagefactory.AgentModeExtensions, extensions)
 		assert.Contains(t, extensions, "siderolabs/intel-ucode")
 		assert.Contains(t, extensions, "siderolabs/amd-ucode")
+		assert.Contains(t, extensions, "siderolabs/chelsio-firmware")
 	})
 
-	t.Run("arm64 drops the x86 microcode and keeps everything else", func(t *testing.T) {
+	t.Run("an unknown architecture falls back to the full set", func(t *testing.T) {
+		t.Parallel()
+
+		assert.Equal(t, imagefactory.AgentModeExtensions, imagefactory.AgentModeExtensionsForArch(""))
+	})
+
+	t.Run("arm64 carries no x86 hardware firmware at all", func(t *testing.T) {
 		t.Parallel()
 
 		extensions := imagefactory.AgentModeExtensionsForArch("arm64")
 
-		assert.NotContains(t, extensions, "siderolabs/intel-ucode")
-		assert.NotContains(t, extensions, "siderolabs/amd-ucode")
-		assert.NotContains(t, extensions, "siderolabs/i915-ucode")
+		assert.Equal(t, imagefactory.AgentModeExtensionsArm64, extensions)
 
-		// the agent itself is the whole point, and the network firmware an arm64 server may need stays
-		assert.Contains(t, extensions, "siderolabs/metal-agent")
-		assert.Contains(t, extensions, "siderolabs/chelsio-firmware")
-		assert.Contains(t, extensions, "siderolabs/qlogic-firmware")
-		assert.Contains(t, extensions, "siderolabs/bnx2-bnx2x")
-		assert.Contains(t, extensions, "siderolabs/intel-ice-firmware")
-		assert.Contains(t, extensions, "siderolabs/realtek-firmware")
-
-		assert.Len(t, extensions, len(imagefactory.AgentModeExtensions)-len(imagefactory.X86MicrocodeExtensions))
+		for _, dropped := range []string{
+			"siderolabs/amd-ucode",
+			"siderolabs/intel-ucode",
+			"siderolabs/i915-ucode",
+			"siderolabs/amdgpu-firmware",
+			"siderolabs/bnx2-bnx2x",
+			"siderolabs/chelsio-firmware",
+			"siderolabs/intel-ice-firmware",
+			"siderolabs/qlogic-firmware",
+		} {
+			assert.NotContains(t, extensions, dropped)
+		}
 	})
 
-	t.Run("the shared list is not mutated", func(t *testing.T) {
+	t.Run("arm64 keeps the agent itself and the firmware a board can actually use", func(t *testing.T) {
 		t.Parallel()
 
-		before := len(imagefactory.AgentModeExtensions)
+		extensions := imagefactory.AgentModeExtensionsForArch("arm64")
 
-		imagefactory.AgentModeExtensionsForArch("arm64")
+		// without the agent there is no agent mode at all
+		assert.Contains(t, extensions, "siderolabs/metal-agent")
 
-		assert.Len(t, imagefactory.AgentModeExtensions, before)
-		assert.Contains(t, imagefactory.AgentModeExtensions, "siderolabs/intel-ucode")
+		// USB Ethernet adapters on Realtek chipsets are a common way to give a board a second interface
+		assert.Contains(t, extensions, "siderolabs/realtek-firmware")
 	})
 }
