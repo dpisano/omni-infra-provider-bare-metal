@@ -18,13 +18,18 @@ concurrency:
   # a push that supersedes an in-flight build makes that build's image obsolete before it exists
   cancel-in-progress: true
 
-# Only commits landing on main produce an image. A pull request does not build, so the first proof
-# that a change still builds comes after it merges; run `make image-provider` locally to check
-# before then. Tags do not build either, as this fork does not cut releases.
+# Commits landing on main produce a :v0.12.0-7-g63cc659-style image, and pushing a version tag
+# produces one tagged with just the version, e.g. v0.12.0. Both come from the same `make
+# image-provider`, which derives IMAGE_TAG from `git describe --match v[0-9]*`, matching upstream's
+# own (deleted) CI workflow, so a tag build's image tag equals the release version.
+# A pull request does not build, so the first proof that a change still builds comes after it
+# merges; run `make image-provider` locally to check before then.
 'on':
   push:
     branches:
       - main
+    tags:
+      - v*
   workflow_dispatch:
 
 jobs:
