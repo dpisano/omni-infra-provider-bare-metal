@@ -47,6 +47,7 @@ type Options struct {
 	DisableDHCPProxy          bool
 	DisableDHCPProxyBroadcast bool
 	SecureBootEnabled         bool
+	AllowMachinesWithoutBMC   bool
 }
 
 // DefaultOptions returns the default provider options.

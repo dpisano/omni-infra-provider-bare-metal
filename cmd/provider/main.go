@@ -148,6 +148,10 @@ func init() {
 		"Comma separated list of key=value pairs to be set to the machine. Example: key1=value1,key2,key3=value3")
 	rootCmd.Flags().BoolVar(&providerOptions.InsecureSkipTLSVerify, "insecure-skip-tls-verify", providerOptions.InsecureSkipTLSVerify,
 		"Skip TLS verification when connecting to the Omni API.")
+	rootCmd.Flags().BoolVar(&providerOptions.AllowMachinesWithoutBMC, "allow-machines-without-bmc", providerOptions.AllowMachinesWithoutBMC,
+		"Accept machines that report no BMC (no IPMI and no Redfish) instead of rejecting them. "+
+			"The provider never powers such a machine on or off, so a human must do it, and it reboots the machine over its agent. "+
+			"Such machines must be configured to network boot first, as the provider cannot set a one-time boot device for them.")
 	rootCmd.Flags().DurationVar(&providerOptions.MinRebootInterval, "min-reboot-interval", providerOptions.MinRebootInterval,
 		"the minimum interval between reboots of the machine issued by the provider. This is to prevent the provider from issuing reboots too frequently.")
 	rootCmd.Flags().BoolVar(

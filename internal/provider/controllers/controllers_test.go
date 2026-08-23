@@ -75,7 +75,17 @@ type bmcClientMock struct {
 	powerOffCh       chan<- struct{}
 	rebootCh         chan<- struct{}
 	setPXEBootOnceCh chan<- pxe.BootMode
+	capabilities     *bmc.Capabilities
 	poweredOn        bool
+}
+
+// Capabilities reports full capabilities unless a test overrides them, e.g. to model a machine without a BMC.
+func (b *bmcClientMock) Capabilities() bmc.Capabilities {
+	if b.capabilities != nil {
+		return *b.capabilities
+	}
+
+	return bmc.FullCapabilities()
 }
 
 func (b *bmcClientMock) Close(context.Context) error {
@@ -137,6 +147,21 @@ func (b *bmcClientMock) ResetBootDevice(context.Context) error {
 type agentClientMock struct {
 	getPowerMgmtResponseMap *containers.ConcurrentMap[string, *agentpb.GetPowerManagementResponse]
 	setPowerMgmtRequestCh   chan<- pair.Pair[string, *agentpb.SetPowerManagementRequest]
+	rebootCh                chan<- string
+}
+
+func (a *agentClientMock) Reboot(ctx context.Context, id string) error {
+	if a.rebootCh == nil {
+		return nil
+	}
+
+	select {
+	case a.rebootCh <- id:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	return nil
 }
 
 func (a *agentClientMock) GetPowerManagement(_ context.Context, id string) (*agentpb.GetPowerManagementResponse, error) {

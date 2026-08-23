@@ -144,10 +144,11 @@ func (x *PowerOperationSpec) GetWipeIdAtPowerOff() string {
 }
 
 type BMCConfigurationSpec struct {
-	state              protoimpl.MessageState     `protogen:"open.v1"`
-	Ipmi               *BMCConfigurationSpec_IPMI `protobuf:"bytes,1,opt,name=ipmi,proto3" json:"ipmi,omitempty"`
-	Api                *BMCConfigurationSpec_API  `protobuf:"bytes,2,opt,name=api,proto3" json:"api,omitempty"`
-	ManuallyConfigured bool                       `protobuf:"varint,3,opt,name=manually_configured,json=manuallyConfigured,proto3" json:"manually_configured,omitempty"`
+	state              protoimpl.MessageState       `protogen:"open.v1"`
+	Ipmi               *BMCConfigurationSpec_IPMI   `protobuf:"bytes,1,opt,name=ipmi,proto3" json:"ipmi,omitempty"`
+	Api                *BMCConfigurationSpec_API    `protobuf:"bytes,2,opt,name=api,proto3" json:"api,omitempty"`
+	ManuallyConfigured bool                         `protobuf:"varint,3,opt,name=manually_configured,json=manuallyConfigured,proto3" json:"manually_configured,omitempty"`
+	Manual             *BMCConfigurationSpec_Manual `protobuf:"bytes,4,opt,name=manual,proto3" json:"manual,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -201,6 +202,13 @@ func (x *BMCConfigurationSpec) GetManuallyConfigured() bool {
 		return x.ManuallyConfigured
 	}
 	return false
+}
+
+func (x *BMCConfigurationSpec) GetManual() *BMCConfigurationSpec_Manual {
+	if x != nil {
+		return x.Manual
+	}
+	return nil
 }
 
 type MachineStatusSpec struct {
@@ -561,6 +569,48 @@ func (x *BMCConfigurationSpec_API) GetAddress() string {
 	return ""
 }
 
+// Manual marks a machine that has no BMC at all, so power is managed by a human.
+//
+// The provider never issues power commands for such a machine: it cannot read its power state,
+// power it on or off, or set a one-time boot device. Reboots go through the agent instead,
+// and the machine is expected to be configured to network boot first, so the provider still
+// decides what it boots via the iPXE handler.
+type BMCConfigurationSpec_Manual struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BMCConfigurationSpec_Manual) Reset() {
+	*x = BMCConfigurationSpec_Manual{}
+	mi := &file_specs_specs_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BMCConfigurationSpec_Manual) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BMCConfigurationSpec_Manual) ProtoMessage() {}
+
+func (x *BMCConfigurationSpec_Manual) ProtoReflect() protoreflect.Message {
+	mi := &file_specs_specs_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BMCConfigurationSpec_Manual.ProtoReflect.Descriptor instead.
+func (*BMCConfigurationSpec_Manual) Descriptor() ([]byte, []int) {
+	return file_specs_specs_proto_rawDescGZIP(), []int{1, 2}
+}
+
 var File_specs_specs_proto protoreflect.FileDescriptor
 
 const file_specs_specs_proto_rawDesc = "" +
@@ -570,18 +620,20 @@ const file_specs_specs_proto_rawDesc = "" +
 	"\x14last_power_operation\x18\x01 \x01(\x0e2\".baremetalproviderspecs.PowerStateR\x12lastPowerOperation\x12Q\n" +
 	"\x17last_power_on_timestamp\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x14lastPowerOnTimestamp\x12)\n" +
 	"\x11last_power_off_id\x18\x03 \x01(\tR\x0elastPowerOffId\x12.\n" +
-	"\x14wipe_id_at_power_off\x18\x04 \x01(\tR\x10wipeIdAtPowerOff\"\xe1\x02\n" +
+	"\x14wipe_id_at_power_off\x18\x04 \x01(\tR\x10wipeIdAtPowerOff\"\xb8\x03\n" +
 	"\x14BMCConfigurationSpec\x12E\n" +
 	"\x04ipmi\x18\x01 \x01(\v21.baremetalproviderspecs.BMCConfigurationSpec.IPMIR\x04ipmi\x12B\n" +
 	"\x03api\x18\x02 \x01(\v20.baremetalproviderspecs.BMCConfigurationSpec.APIR\x03api\x12/\n" +
-	"\x13manually_configured\x18\x03 \x01(\bR\x12manuallyConfigured\x1al\n" +
+	"\x13manually_configured\x18\x03 \x01(\bR\x12manuallyConfigured\x12K\n" +
+	"\x06manual\x18\x04 \x01(\v23.baremetalproviderspecs.BMCConfigurationSpec.ManualR\x06manual\x1al\n" +
 	"\x04IPMI\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\rR\x04port\x12\x1a\n" +
 	"\busername\x18\x03 \x01(\tR\busername\x12\x1a\n" +
 	"\bpassword\x18\x04 \x01(\tR\bpassword\x1a\x1f\n" +
 	"\x03API\x12\x18\n" +
-	"\aaddress\x18\x01 \x01(\tR\aaddress\"\xab\x01\n" +
+	"\aaddress\x18\x01 \x01(\tR\aaddress\x1a\b\n" +
+	"\x06Manual\"\xab\x01\n" +
 	"\x11MachineStatusSpec\x12)\n" +
 	"\x10agent_accessible\x18\x01 \x01(\bR\x0fagentAccessible\x12C\n" +
 	"\vpower_state\x18\x02 \x01(\x0e2\".baremetalproviderspecs.PowerStateR\n" +
@@ -618,31 +670,33 @@ func file_specs_specs_proto_rawDescGZIP() []byte {
 }
 
 var file_specs_specs_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_specs_specs_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_specs_specs_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_specs_specs_proto_goTypes = []any{
-	(PowerState)(0),                   // 0: baremetalproviderspecs.PowerState
-	(*PowerOperationSpec)(nil),        // 1: baremetalproviderspecs.PowerOperationSpec
-	(*BMCConfigurationSpec)(nil),      // 2: baremetalproviderspecs.BMCConfigurationSpec
-	(*MachineStatusSpec)(nil),         // 3: baremetalproviderspecs.MachineStatusSpec
-	(*WipeStatusSpec)(nil),            // 4: baremetalproviderspecs.WipeStatusSpec
-	(*RebootStatusSpec)(nil),          // 5: baremetalproviderspecs.RebootStatusSpec
-	(*TLSConfigSpec)(nil),             // 6: baremetalproviderspecs.TLSConfigSpec
-	(*BMCConfigurationSpec_IPMI)(nil), // 7: baremetalproviderspecs.BMCConfigurationSpec.IPMI
-	(*BMCConfigurationSpec_API)(nil),  // 8: baremetalproviderspecs.BMCConfigurationSpec.API
-	(*timestamppb.Timestamp)(nil),     // 9: google.protobuf.Timestamp
+	(PowerState)(0),                     // 0: baremetalproviderspecs.PowerState
+	(*PowerOperationSpec)(nil),          // 1: baremetalproviderspecs.PowerOperationSpec
+	(*BMCConfigurationSpec)(nil),        // 2: baremetalproviderspecs.BMCConfigurationSpec
+	(*MachineStatusSpec)(nil),           // 3: baremetalproviderspecs.MachineStatusSpec
+	(*WipeStatusSpec)(nil),              // 4: baremetalproviderspecs.WipeStatusSpec
+	(*RebootStatusSpec)(nil),            // 5: baremetalproviderspecs.RebootStatusSpec
+	(*TLSConfigSpec)(nil),               // 6: baremetalproviderspecs.TLSConfigSpec
+	(*BMCConfigurationSpec_IPMI)(nil),   // 7: baremetalproviderspecs.BMCConfigurationSpec.IPMI
+	(*BMCConfigurationSpec_API)(nil),    // 8: baremetalproviderspecs.BMCConfigurationSpec.API
+	(*BMCConfigurationSpec_Manual)(nil), // 9: baremetalproviderspecs.BMCConfigurationSpec.Manual
+	(*timestamppb.Timestamp)(nil),       // 10: google.protobuf.Timestamp
 }
 var file_specs_specs_proto_depIdxs = []int32{
-	0, // 0: baremetalproviderspecs.PowerOperationSpec.last_power_operation:type_name -> baremetalproviderspecs.PowerState
-	9, // 1: baremetalproviderspecs.PowerOperationSpec.last_power_on_timestamp:type_name -> google.protobuf.Timestamp
-	7, // 2: baremetalproviderspecs.BMCConfigurationSpec.ipmi:type_name -> baremetalproviderspecs.BMCConfigurationSpec.IPMI
-	8, // 3: baremetalproviderspecs.BMCConfigurationSpec.api:type_name -> baremetalproviderspecs.BMCConfigurationSpec.API
-	0, // 4: baremetalproviderspecs.MachineStatusSpec.power_state:type_name -> baremetalproviderspecs.PowerState
-	9, // 5: baremetalproviderspecs.RebootStatusSpec.last_reboot_timestamp:type_name -> google.protobuf.Timestamp
-	6, // [6:6] is the sub-list for method output_type
-	6, // [6:6] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	0,  // 0: baremetalproviderspecs.PowerOperationSpec.last_power_operation:type_name -> baremetalproviderspecs.PowerState
+	10, // 1: baremetalproviderspecs.PowerOperationSpec.last_power_on_timestamp:type_name -> google.protobuf.Timestamp
+	7,  // 2: baremetalproviderspecs.BMCConfigurationSpec.ipmi:type_name -> baremetalproviderspecs.BMCConfigurationSpec.IPMI
+	8,  // 3: baremetalproviderspecs.BMCConfigurationSpec.api:type_name -> baremetalproviderspecs.BMCConfigurationSpec.API
+	9,  // 4: baremetalproviderspecs.BMCConfigurationSpec.manual:type_name -> baremetalproviderspecs.BMCConfigurationSpec.Manual
+	0,  // 5: baremetalproviderspecs.MachineStatusSpec.power_state:type_name -> baremetalproviderspecs.PowerState
+	10, // 6: baremetalproviderspecs.RebootStatusSpec.last_reboot_timestamp:type_name -> google.protobuf.Timestamp
+	7,  // [7:7] is the sub-list for method output_type
+	7,  // [7:7] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_specs_specs_proto_init() }
@@ -656,7 +710,7 @@ func file_specs_specs_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_specs_specs_proto_rawDesc), len(file_specs_specs_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   8,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -26,6 +26,15 @@ const (
 	BootModeTalosDisk BootMode = "talos-disk"
 )
 
+// IsManuallyPowered returns true if the machine has no BMC, so a human controls its power.
+//
+// The provider cannot read such a machine's power state, power it on or off, or set a one-time
+// boot device, so it relies on the machine being configured to network boot first and on the agent
+// for reboots.
+func IsManuallyPowered(bmcConfiguration *resources.BMCConfiguration) bool {
+	return bmcConfiguration != nil && bmcConfiguration.TypedSpec().Value.Manual != nil
+}
+
 // IsInstalled returns true if the machine is installed.
 func IsInstalled(infraMachine *infra.Machine, wipeStatus *resources.WipeStatus) bool {
 	if infraMachine == nil {

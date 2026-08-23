@@ -226,9 +226,11 @@ func (p *Provider) Run(ctx context.Context) error {
 	for _, qController := range []controller.QController{
 		controllers.NewMachineStatusController(bmcClientFactory, agentClient, agentConnectionEventCh, pxeBootEventCh, 30*time.Second),
 		controllers.NewInfraMachineStatusController(parsedMachineLabels),
-		controllers.NewBMCConfigurationController(agentClient, bmcAPIAddressReader),
+		controllers.NewBMCConfigurationController(agentClient, bmcAPIAddressReader, controllers.BMCConfigurationControllerOptions{
+			AllowMachinesWithoutBMC: p.options.AllowMachinesWithoutBMC,
+		}),
 		controllers.NewPowerOperationController(time.Now, bmcClientFactory, p.options.MinRebootInterval, pxeBootMode),
-		controllers.NewRebootStatusController(bmcClientFactory, p.options.MinRebootInterval, pxeBootMode, controllers.RebootStatusControllerOptions{}),
+		controllers.NewRebootStatusController(bmcClientFactory, agentClient, p.options.MinRebootInterval, pxeBootMode, controllers.RebootStatusControllerOptions{}),
 		controllers.NewWipeStatusController(agentClient),
 	} {
 		if err = cosiRuntime.RegisterQController(qController); err != nil {
