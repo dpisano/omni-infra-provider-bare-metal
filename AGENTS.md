@@ -230,7 +230,8 @@ Both are needed, as disabling either one alone still leaves some of them behind.
 Two hand-written workflows replace them, and they split publishing from checking.
 
 `docker-image.yaml` builds the provider image through the same `make image-provider` target on a stock GitHub runner and pushes it to the repository owner's namespace on GHCR.
-It runs only on commits landing on `main`, plus a manual trigger, so nothing is ever published from an unmerged branch.
+It runs on commits landing on `main`, on pushes of a `v*` version tag, plus a manual trigger, so nothing is ever published from an unmerged branch.
+The image tag itself is never set by the workflow: it comes from the Makefile's `TAG`, `git describe --tag --always --dirty --match v[0-9]\*`, the same derivation upstream's own (deleted) CI workflow used, so a tag push yields an image tagged with exactly that release version (for example `v0.12.0`), and a plain commit to `main` yields the `v0.12.0-7-g63cc659`-style describe output.
 
 `pull-request.yaml` is the check side and publishes nothing.
 It runs `make unit-tests`, and only if those pass does it build the image, for both architectures and with `PUSH=false`, so the image is proven to still build and then thrown away.
