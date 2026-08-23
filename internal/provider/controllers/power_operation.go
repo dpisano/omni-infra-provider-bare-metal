@@ -36,12 +36,15 @@ type PowerOperationController = qtransform.QController[*infra.Machine, *resource
 // NewPowerOperationController creates a new PowerOperationController.
 //
 //nolint:dupl
-func NewPowerOperationController(nowFunc NowFunc, bmcClientFactory BMCClientFactory, minRebootInterval time.Duration, pxeBootMode pxe.BootMode) *PowerOperationController {
+func NewPowerOperationController(nowFunc NowFunc, bmcClientFactory BMCClientFactory, minRebootInterval time.Duration,
+	pxeBootMode pxe.BootMode, bootOptions machine.BootOptions,
+) *PowerOperationController {
 	helper := &powerOperationControllerHelper{
 		nowFunc:           nowFunc,
 		bmcClientFactory:  bmcClientFactory,
 		minRebootInterval: minRebootInterval,
 		pxeBootMode:       pxeBootMode,
+		bootOptions:       bootOptions,
 	}
 
 	return qtransform.NewQController(
@@ -86,6 +89,7 @@ type powerOperationControllerHelper struct {
 	bmcClientFactory  BMCClientFactory
 	nowFunc           NowFunc
 	pxeBootMode       pxe.BootMode
+	bootOptions       machine.BootOptions
 	minRebootInterval time.Duration
 }
 
@@ -167,7 +171,7 @@ func (helper *powerOperationControllerHelper) transform(ctx context.Context, r c
 	case !isPoweredOn && !powerOffActive && (requiresPowerOn || preferredPowerState == omnispecs.InfraMachineSpec_POWER_STATE_ON):
 		logger.Debug("power on machine")
 
-		requiredBootMode := machine.RequiredBootMode(infraMachine, bmcConfiguration, wipeStatus, logger)
+		requiredBootMode := machine.RequiredBootMode(infraMachine, bmcConfiguration, wipeStatus, helper.bootOptions, logger)
 		if machine.RequiresPXEBoot(requiredBootMode) {
 			if err = bmcClient.SetPXEBootOnce(ctx, helper.pxeBootMode); err != nil {
 				return err

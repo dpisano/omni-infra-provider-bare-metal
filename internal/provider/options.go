@@ -48,6 +48,7 @@ type Options struct {
 	DisableDHCPProxyBroadcast bool
 	SecureBootEnabled         bool
 	AllowMachinesWithoutBMC   bool
+	AlwaysNetboot             bool
 }
 
 // DefaultOptions returns the default provider options.

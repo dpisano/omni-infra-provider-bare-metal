@@ -41,6 +41,7 @@ import (
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/imagefactory"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/ip"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/ipxe"
+	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/machine"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/machineconfig"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/meta"
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/resources"
@@ -172,6 +173,11 @@ func (p *Provider) Run(ctx context.Context) error {
 
 	pxeBootEventCh := make(chan controllers.PXEBootEvent, pxeBootEventChBuffer)
 
+	// shared by the iPXE handler and the controllers, so they all agree on what a machine should boot
+	bootOptions := machine.BootOptions{
+		AlwaysNetboot: p.options.AlwaysNetboot,
+	}
+
 	ipxeHandler, err := ipxe.NewHandler(
 		imageFactoryClient, machineConfig, omniState, pxeBootEventCh,
 		ipxe.HandlerOptions{
@@ -182,6 +188,7 @@ func (p *Provider) Run(ctx context.Context) error {
 			BootAssetsPath:      p.options.BootAssetsPath,
 			AgentTestMode:       p.options.AgentTestMode,
 			BootFromDiskMethod:  p.options.BootFromDiskMethod,
+			Boot:                bootOptions,
 		},
 		p.logger.With(zap.String("component", "ipxe_handler")),
 	)
@@ -229,8 +236,10 @@ func (p *Provider) Run(ctx context.Context) error {
 		controllers.NewBMCConfigurationController(agentClient, bmcAPIAddressReader, controllers.BMCConfigurationControllerOptions{
 			AllowMachinesWithoutBMC: p.options.AllowMachinesWithoutBMC,
 		}),
-		controllers.NewPowerOperationController(time.Now, bmcClientFactory, p.options.MinRebootInterval, pxeBootMode),
-		controllers.NewRebootStatusController(bmcClientFactory, agentClient, p.options.MinRebootInterval, pxeBootMode, controllers.RebootStatusControllerOptions{}),
+		controllers.NewPowerOperationController(time.Now, bmcClientFactory, p.options.MinRebootInterval, pxeBootMode, bootOptions),
+		controllers.NewRebootStatusController(bmcClientFactory, agentClient, p.options.MinRebootInterval, pxeBootMode, controllers.RebootStatusControllerOptions{
+			BootOptions: bootOptions,
+		}),
 		controllers.NewWipeStatusController(agentClient),
 	} {
 		if err = cosiRuntime.RegisterQController(qController); err != nil {

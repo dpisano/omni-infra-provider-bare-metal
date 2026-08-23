@@ -83,6 +83,7 @@ type HandlerOptions struct {
 	BootAssetsPath      string
 	TLS                 tls.Options
 	APIPort             int
+	Boot                machine.BootOptions
 	UseLocalBootAssets  bool
 	AgentTestMode       bool
 }
@@ -223,7 +224,7 @@ func (handler *Handler) makeBootDecision(ctx context.Context, arch, uuid string,
 		}
 	}
 
-	requiredBootMode := machine.RequiredBootMode(infraMachine, bmcConfiguration, wipeStatus, logger)
+	requiredBootMode := machine.RequiredBootMode(infraMachine, bmcConfiguration, wipeStatus, handler.options.Boot, logger)
 
 	var userExtraKernelArgs []string
 

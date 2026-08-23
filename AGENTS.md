@@ -143,9 +143,30 @@ The most relevant for this repo's work:
 - `--image-factory-base-url` and `--image-factory-pxe-base-url` point at the factory.
 - `--secure-boot-enabled` serves a UKI, requires UEFI PXE mode, and rules out local boot assets.
 - `--boot-from-disk-method` picks how an installed machine boots from disk (`ipxe-exit`, `http-404`, or `ipxe-sanboot`), for firmware that handles the iPXE exit path differently.
+- `--allow-machines-without-bmc` accepts machines that have no BMC at all, see the section below.
+- `--always-netboot` never hands an installed machine off to its disk and serves it Talos over the network on every boot instead.
 - The `--redfish-*` and `--ipmi-*` flags tune BMC behavior.
 - `--agent-test-mode` boots the agent with API-based power management for QEMU test machines.
 - The `--tls-*` flags choose between ephemeral auto-generated certs and persistent operator-supplied certs.
+
+## Machines without a BMC
+
+Some machines have no IPMI and no Redfish at all, so there is nothing to talk to out of band.
+Under `--allow-machines-without-bmc`, a machine whose agent reports no power management is recorded as manually powered (`BMCConfigurationSpec.Manual`) rather than rejected, which is what lets it become ready to use instead of being pinned to agent mode forever.
+
+BMC clients report capabilities (`bmc.Capabilities`), and callers check them before issuing an operation instead of calling and handling the failure.
+The manual client supports nothing, so the provider never reads such a machine's power state, powers it on or off, or sets a one-time boot device, and its power state is instead inferred from whether its agent answers.
+An unreachable agent is not taken as proof the machine is off, since it may be running Talos without the agent.
+
+Reboots resolve over the first channel that can carry them: the BMC when the machine has one, otherwise the agent, which only works while the machine runs in agent mode.
+A machine with neither is left alone for a human to power-cycle, and the controller decides that once and stops rather than retrying in a loop.
+Because a one-time boot device cannot be set for these machines, they must be configured to network boot first, which is what keeps the provider in control of what they boot.
+
+The natural companion is `--always-netboot`, which stops the provider from ever handing an installed machine off to its disk and serves it the cluster's Talos version over the network on every boot instead.
+It exists for machines whose firmware cannot boot the installed system, such as a Raspberry Pi, whose installed disk lacks the board's bootloader because Omni installs Talos without a board overlay.
+The disk still holds the machine's state, and only the kernel and initramfs come from the provider, which works because Talos ignores the `talos.config` kernel argument once a machine config exists in STATE.
+The cost is that the provider becomes a hard dependency of every boot, so while it is down a machine that reboots does not come back up.
+A rejected machine is still handed off to its disk under this flag, as a rejected machine is meant to be left alone.
 
 ## Development and testing
 

@@ -28,6 +28,7 @@ import (
 // RebootStatusControllerOptions defines options for the RebootStatusController.
 type RebootStatusControllerOptions struct {
 	PostTransformFunc func()
+	BootOptions       machine.BootOptions
 }
 
 // RebootStatusController manages machine power management.
@@ -133,7 +134,7 @@ func (helper *rebootStatusControllerHelper) transform(ctx context.Context, r con
 		return xerrors.NewTaggedf[qtransform.SkipReconcileTag]("machine status not found")
 	}
 
-	requiredBootMode := machine.RequiredBootMode(infraMachine, bmcConfiguration, wipeStatus, logger)
+	requiredBootMode := machine.RequiredBootMode(infraMachine, bmcConfiguration, wipeStatus, helper.options.BootOptions, logger)
 	requiresPXEBoot := machine.RequiresPXEBoot(requiredBootMode)
 	requiresPowerOn := machine.RequiresPowerOn(infraMachine, wipeStatus)
 	agentAccessible := machineStatus.TypedSpec().Value.AgentAccessible
