@@ -156,6 +156,20 @@ The most relevant for this repo's work:
 - `--agent-test-mode` boots the agent with API-based power management for QEMU test machines.
 - The `--tls-*` flags choose between ephemeral auto-generated certs and persistent operator-supplied certs.
 
+## What the DHCP proxy has to put in a reply
+
+A PXE client is much stricter about a proxy reply than the minimum that makes a packet parse, and every one of these was learned by a machine that was offered a boot file and then silently never fetched it.
+
+The reply needs a server identifier (option 54), which RFC 2131 requires in a DHCPOFFER and a DHCPACK alike, set to the provider's own address.
+Setting it does not make the reply look like a real address offer: what marks it as a proxy reply is the empty yiaddr.
+It is four bytes wide, so it is left out entirely for an IPv6 advertise address, which only the URL-based firmware types can be reached over anyway.
+
+The reply also needs vendor specific information (option 43) saying what to do next, because a reply carrying the `PXEClient` class identifier is a PXE boot server reply and strict firmware, notably EDK2 based UEFI, discards one that describes nothing.
+Discovery control (sub-option 6) bit 3 means "boot the file named in this reply and go no further", which is exactly what this provider wants, and the discovery bits are deliberately left clear so a client that ignores it still has the boot server discovery fallback on port 4011.
+Only the three plain-TFTP firmware types get this: the iPXE and HTTP boot ones read the boot file name straight out of the options, and a Raspberry Pi gets its own boot menu instead.
+
+`dhcpv4.Options.ToBytes` deliberately omits the End option, so any sub-option space built with it has to be terminated by hand.
+
 ## Machines without a BMC
 
 Some machines have no IPMI and no Redfish at all, so there is nothing to talk to out of band.

@@ -302,6 +302,18 @@ func OfferDHCP(req *dhcpv4.DHCPv4, apiAdvertiseAddress string, apiPort int, fwty
 		dhcpv4.WithOptionCopied(req, dhcpv4.OptionClassIdentifier),
 	}
 
+	// RFC 2131 requires a server identifier in both DHCPOFFER and DHCPACK, and strict PXE firmware
+	// discards a response that has none, so the client is offered a boot file and then never fetches
+	// it. A proxy sets it to its own address, exactly as a regular DHCP server would: what marks the
+	// response as a proxy offer is the empty yiaddr, not a missing server identifier.
+	//
+	// Option 54 is four bytes wide, so an IPv6 advertise address cannot be carried in it. The
+	// firmware types that can be reached over IPv6 at all are the URL-based ones, which do not need
+	// it, so leave it out rather than encoding an empty option.
+	if serverIP.To4() != nil {
+		modifiers = append(modifiers, dhcpv4.WithOption(dhcpv4.OptServerIdentifier(serverIP)))
+	}
+
 	resp, err := dhcpv4.NewReplyFromRequest(
 		req,
 		modifiers...,
@@ -325,6 +337,7 @@ func OfferDHCP(req *dhcpv4.DHCPv4, apiAdvertiseAddress string, apiPort int, fwty
 		resp.UpdateOption(dhcpv4.OptTFTPServerName(serverIP.String()))
 		resp.BootFileName = "undionly.kpxe"
 		resp.UpdateOption(dhcpv4.OptBootFileName(resp.BootFileName))
+		resp.UpdateOption(dhcpv4.OptGeneric(dhcpv4.OptionVendorSpecificInformation, bootFileDirectlyPXEOptions()))
 	case FirmwareX86Ipxe:
 		// Almost standard PXE, but the boot filename needs to be a URL.
 		urlHost := serverIP.String()
@@ -338,11 +351,13 @@ func OfferDHCP(req *dhcpv4.DHCPv4, apiAdvertiseAddress string, apiPort int, fwty
 		resp.UpdateOption(dhcpv4.OptTFTPServerName(serverIP.String()))
 		resp.BootFileName = "snp.efi"
 		resp.UpdateOption(dhcpv4.OptBootFileName(resp.BootFileName))
+		resp.UpdateOption(dhcpv4.OptGeneric(dhcpv4.OptionVendorSpecificInformation, bootFileDirectlyPXEOptions()))
 	case FirmwareARMEFI:
 		// This is completely standard PXE: just load a file from TFTP.
 		resp.UpdateOption(dhcpv4.OptTFTPServerName(serverIP.String()))
 		resp.BootFileName = "snp-arm64.efi"
 		resp.UpdateOption(dhcpv4.OptBootFileName(resp.BootFileName))
+		resp.UpdateOption(dhcpv4.OptGeneric(dhcpv4.OptionVendorSpecificInformation, bootFileDirectlyPXEOptions()))
 	case FirmwareX86HTTP:
 		// This is completely standard HTTP-boot: just load a file from HTTP.
 		resp.UpdateOption(dhcpv4.OptBootFileName(fmt.Sprintf("http://%s/tftp/amd64/snp.efi", ipPort)))
@@ -408,6 +423,33 @@ func isRaspberryPi(hwAddr net.HardwareAddr) bool {
 	}
 
 	return slices.Contains(raspberryPiOUIs, [3]byte(hwAddr[:3]))
+}
+
+// pxeDiscoveryControlUseBootFile is bit 3 of the PXE discovery control sub-option: when it is set
+// and the reply carries a boot file name, the client downloads that file instead of going on to
+// boot server discovery.
+const pxeDiscoveryControlUseBootFile = 0x08
+
+// bootFileDirectlyPXEOptions builds the vendor specific information telling a PXE client to boot the
+// file named in this reply and go no further.
+//
+// A proxy DHCP reply that carries the PXEClient class identifier is a boot server reply, and strict
+// firmware, notably EDK2 based UEFI, expects one to describe what to do next in its vendor specific
+// information. Given none, such a client discards the reply, which looks like a machine that is
+// offered a boot file and then never fetches it. The other firmware types do not get this: the
+// iPXE and HTTP boot ones read the boot file name straight out of the options, and a Raspberry Pi
+// gets its own boot menu built below.
+//
+// Only the discovery control sub-option is sent. Leaving the discovery bits clear keeps the boot
+// server discovery fallback available to a client that ignores this one, rather than closing off
+// every path at once.
+func bootFileDirectlyPXEOptions() []byte {
+	options := dhcpv4.Options{
+		pxeDiscoveryControl: []byte{pxeDiscoveryControlUseBootFile},
+	}
+
+	// Options.Marshal deliberately skips the End option, so terminate the sub-option space here
+	return append(options.ToBytes(), pxeEnd)
 }
 
 // raspberryPiBootMenuDescription is the string the Raspberry Pi bootloader looks for in the vendor
