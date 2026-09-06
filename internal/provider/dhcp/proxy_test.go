@@ -108,6 +108,90 @@ func TestOfferDHCP(t *testing.T) {
 		assert.NotNil(t, resp.GetOneOption(dhcpv4.OptionClassIdentifier))
 	})
 
+	t.Run("every response carries a server identifier", func(t *testing.T) {
+		t.Parallel()
+
+		// RFC 2131 requires option 54 in a DHCPOFFER and a DHCPACK alike, and strict PXE firmware
+		// discards a response without one, which looks like a client that is offered a boot file
+		// and then never fetches it.
+		for _, port := range []int{dhcp.Port67, dhcp.Port4011} {
+			msgType := dhcpv4.MessageTypeDiscover
+			if port == dhcp.Port4011 {
+				msgType = dhcpv4.MessageTypeRequest
+			}
+
+			for _, fwtype := range []dhcp.Firmware{
+				dhcp.FirmwareX86PC,
+				dhcp.FirmwareX86EFI,
+				dhcp.FirmwareARMEFI,
+				dhcp.FirmwareX86Ipxe,
+				dhcp.FirmwareX86HTTP,
+				dhcp.FirmwareARMHTTP,
+			} {
+				resp, err := dhcp.OfferDHCP(newPXEPacket(t, msgType), apiAddr, apiPort, fwtype, port)
+				require.NoError(t, err)
+
+				assert.Equal(t, net.ParseIP(apiAddr).To4(), resp.ServerIdentifier().To4(),
+					"firmware type %d on port %d", fwtype, port)
+			}
+		}
+
+		// A proxy response is told apart from a real one by carrying no address for the client,
+		// so the server identifier must not be mistaken for an address offer.
+		resp, err := dhcp.OfferDHCP(newPXEPacket(t, dhcpv4.MessageTypeDiscover), apiAddr, apiPort, dhcp.FirmwareX86EFI, dhcp.Port67)
+		require.NoError(t, err)
+
+		assert.True(t, resp.YourIPAddr.IsUnspecified(), "a proxy offer must not hand out an address")
+	})
+
+	t.Run("an IPv6 advertise address leaves the server identifier out rather than encoding it empty", func(t *testing.T) {
+		t.Parallel()
+
+		// Option 54 is four bytes wide, and only the URL-based firmware types are reachable over
+		// IPv6 at all, none of which need it.
+		resp, err := dhcp.OfferDHCP(newPXEPacket(t, dhcpv4.MessageTypeDiscover), "2001:db8::1", apiPort, dhcp.FirmwareX86HTTP, dhcp.Port67)
+		require.NoError(t, err)
+
+		assert.Nil(t, resp.GetOneOption(dhcpv4.OptionServerIdentifier))
+	})
+
+	t.Run("TFTP responses tell the client to boot the file they name", func(t *testing.T) {
+		t.Parallel()
+
+		// Strict PXE firmware discards a boot server reply whose vendor specific information does
+		// not say what to do next, which looks like a client that is offered a boot file and then
+		// never fetches it.
+		for _, fwtype := range []dhcp.Firmware{dhcp.FirmwareX86PC, dhcp.FirmwareX86EFI, dhcp.FirmwareARMEFI} {
+			resp, err := dhcp.OfferDHCP(newPXEPacket(t, dhcpv4.MessageTypeDiscover), apiAddr, apiPort, fwtype, dhcp.Port67)
+			require.NoError(t, err)
+
+			vendorOpts := resp.GetOneOption(dhcpv4.OptionVendorSpecificInformation)
+			require.NotEmpty(t, vendorOpts, "firmware type %d", fwtype)
+
+			// the sub-option space must be well formed, and terminated with the End option
+			assert.Equal(t, byte(255), vendorOpts[len(vendorOpts)-1], "firmware type %d", fwtype)
+
+			parsed := dhcpv4.Options{}
+			require.NoError(t, parsed.FromBytes(vendorOpts))
+
+			// discovery control bit 3: boot the file named in this reply, do not discover further
+			assert.Equal(t, []byte{0x08}, parsed.Get(dhcpv4.GenericOptionCode(6)), "firmware type %d", fwtype)
+		}
+	})
+
+	t.Run("responses that carry a boot URL are left alone", func(t *testing.T) {
+		t.Parallel()
+
+		// These read the boot file name straight out of the options, and HTTP boot is not a PXE
+		// boot server exchange at all, so PXE vendor options have no place in either.
+		for _, fwtype := range []dhcp.Firmware{dhcp.FirmwareX86Ipxe, dhcp.FirmwareX86HTTP, dhcp.FirmwareARMHTTP} {
+			resp, err := dhcp.OfferDHCP(newPXEPacket(t, dhcpv4.MessageTypeDiscover), apiAddr, apiPort, fwtype, dhcp.Port67)
+			require.NoError(t, err)
+
+			assert.Nil(t, resp.GetOneOption(dhcpv4.OptionVendorSpecificInformation), "firmware type %d", fwtype)
+		}
+	})
+
 	t.Run("firmware types produce correct boot filenames", func(t *testing.T) {
 		t.Parallel()
 
