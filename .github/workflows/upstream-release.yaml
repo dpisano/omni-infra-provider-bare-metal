@@ -136,7 +136,13 @@ jobs:
           # under its `git describe` name, so retagging that image costs no build: within one
           # repository it is a manifest copy. This has to be read before the tag moves, or describe
           # would resolve to the version itself.
-          describe="$(git describe --tag --always --dirty --match 'v[0-9]*' "${head}")"
+          #
+          # This is the Makefile's derivation of IMAGE_TAG minus --dirty, which git rejects
+          # outright alongside a commit-ish: "option '--dirty' and commit-ishes cannot be used
+          # together". Naming the commit is what matters here, and dropping --dirty changes no
+          # output, since --dirty only ever adds a suffix for an unclean working tree and a
+          # checkout in Actions is always clean.
+          describe="$(git describe --tag --always --match 'v[0-9]*' "${head}")"
 
           if docker buildx imagetools inspect "${image}:${describe}" >/dev/null 2>&1; then
             echo "build=false" >> "$GITHUB_OUTPUT"
