@@ -91,6 +91,10 @@ Because the tag points at this fork's `main`, the release carries upstream's rel
 A release is only cut once `main` actually contains the upstream release commit, so it waits for the weekly upstream sync pull request to be reviewed and merged.
 Nothing merges automatically.
 
+A release tracks `main` rather than a fixed commit, so it is redone whenever a commit lands on `main` afterwards: the tag moves onto the newer `main` and the image under it is replaced.
+A version here therefore names the newest `main` carrying that upstream release, not the state of `main` on the day upstream cut it, and the same version tag can give you different bits over time.
+The commit a release currently names is in its notes, so pin to that commit's own image tag if you need bits that never change under you.
+
 Upstream's own CI is not used here, as every job in it needs Sidero Labs infrastructure to run.
 See the GitHub workflows section of [AGENTS.md](AGENTS.md) for what replaces it.
 
