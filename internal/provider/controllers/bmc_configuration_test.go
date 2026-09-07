@@ -6,6 +6,7 @@ package controllers_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/cosi-project/runtime/pkg/controller/runtime"
@@ -146,6 +147,28 @@ func TestBMCConfigurationWithoutBMC(t *testing.T) {
 			name:                    "no ipmi device, not allowed",
 			err:                     status.Error(codes.Internal, noIPMIDevice),
 			allowMachinesWithoutBMC: false,
+		},
+		{
+			// the exact wording is the agent's, and it is not matched: only the subsystem name is,
+			// so rewording the failure upstream does not quietly stop this working
+			name:                    "a reworded ipmi failure is still recognized",
+			err:                     status.Error(codes.Internal, "cannot open IPMI device /dev/ipmi0: no such file or directory"),
+			allowMachinesWithoutBMC: true,
+			wantManual:              true,
+		},
+		{
+			// the provider wraps what it gets from the agent, and the status has to survive that
+			name:                    "a wrapped status is still recognized",
+			err:                     fmt.Errorf("calling the agent: %w", status.Error(codes.Internal, noIPMIDevice)),
+			allowMachinesWithoutBMC: true,
+			wantManual:              true,
+		},
+		{
+			// a blip between the provider and the agent must never cost a machine its BMC, whatever
+			// the message happens to say
+			name:                    "a transport failure is not treated as absent even mentioning ipmi",
+			err:                     status.Error(codes.Unavailable, "ipmi: connection refused"),
+			allowMachinesWithoutBMC: true,
 		},
 		{
 			// the client was created, so there is a BMC and something else went wrong: retry rather
