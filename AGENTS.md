@@ -51,7 +51,8 @@ The power-management RPCs let the agent bootstrap out-of-band BMC access from in
 The iPXE handler (`internal/provider/ipxe/handler.go`, `bootIntoAgentMode`) chooses between two paths based on `--use-local-boot-assets`.
 
 The image factory path is the production default.
-The provider asks the Image Factory for a schematic (`internal/provider/imagefactory/client.go`, `SchematicIPXEURL` with `agentMode=true`), forcing `talosVersion = AgentModeTalosVersion` and a fixed extension set of firmware extensions plus `siderolabs/metal-agent` with no version.
+The provider asks Omni for the boot asset (`internal/provider/imagefactory/client.go`, `SchematicIPXEURL` with `agentMode=true`), forcing `talosVersion = AgentModeTalosVersion` and a fixed extension set of firmware extensions plus `siderolabs/metal-agent` with no version.
+Omni ensures the schematic on whichever factory it is configured with and hands back a self-contained iPXE URL, so the factory address and any credentials it needs come from Omni rather than from provider flags.
 The factory resolves `siderolabs/metal-agent` against its per-Talos-version official-extensions catalog and errors if the extension is not published for that Talos version.
 So the agent version served this way is whatever the extensions catalog pins for `AgentModeTalosVersion`, and advancing it means getting `AgentModeTalosVersion` onto a Talos version whose catalog pins the desired agent version, by waiting for such a catalog or bumping the setting to one.
 This is independent of the `talos-metal-agent` version in `go.mod`, which only supplies the agent's Go API and proto to the provider.
@@ -116,7 +117,7 @@ The exact predicates live in `internal/provider/machine`, so treat this as the i
 - Provider to Omni: COSI runtime over gRPC, authed via `OMNI_SERVICE_ACCOUNT_KEY`, watching and writing `infra.*` resources.
 - Provider to agent: reverse gRPC tunnel on the API port, affinity-routed by machine UUID (`internal/provider/agent`).
 - Provider to machines: DHCP proxy (`internal/provider/dhcp`), TFTP (`internal/provider/tftp`), and the HTTP iPXE handler (`internal/provider/ipxe`).
-- Provider to Image Factory: HTTP (`internal/provider/imagefactory`).
+- Provider to Image Factory: none directly, since `internal/provider/imagefactory` goes through the Omni client to ensure the boot asset and get the iPXE URL back.
 - Provider to BMC: IPMI, Redfish, or API backends behind one `Client` interface (`internal/provider/bmc`), with `bmc/pxe` holding the BIOS/UEFI PXE-boot abstraction.
   The backend is chosen per machine: the API backend if the machine has an API power management config, otherwise Redfish when enabled and probed as available (cached per address), otherwise IPMI.
 
@@ -146,7 +147,6 @@ The most relevant for this repo's work:
 - `--use-local-boot-assets` serves local boot assets instead of the factory.
 - `--boot-assets-path` sets the directory the local boot assets are read from, defaulting to the `/assets` baked into the provider image.
 - `--agent-mode-talos-version` sets the Talos version used for factory agent-mode schematics, and it has no effect under `--use-local-boot-assets`.
-- `--image-factory-base-url` and `--image-factory-pxe-base-url` point at the factory.
 - `--secure-boot-enabled` serves a UKI, requires UEFI PXE mode, and rules out local boot assets.
 - `--boot-from-disk-method` picks how an installed machine boots from disk (`ipxe-exit`, `http-404`, or `ipxe-sanboot`), for firmware that handles the iPXE exit path differently.
 - `--allow-machines-without-bmc` accepts machines that have no BMC at all, see the section below.
@@ -230,19 +230,26 @@ A Pi also needs `--always-netboot`, because Omni installs Talos without a board 
 
 Bare-metal machines can be emulated with QEMU for development and integration testing.
 The `qemu-up` command in this repo uses the Talos provision library to create PXE-bootable QEMU machines with blank disks, the same machinery behind `talosctl cluster create`.
-Each machine's launcher process serves a small per-machine HTTP power API (power on and off, reboot, one-time PXE boot, status) that emulates a BMC, and its address is recorded in the machine's launch config file under the provisioner state directory.
-The provider is then run with `--agent-test-mode` and with `--api-power-mgmt-state-dir` pointing at that state directory.
-In agent test mode the provider boots agents with the test-mode kernel argument, the agent reports API-based power management instead of configuring IPMI, and the provider looks up each machine's power API address in the state directory by node UUID.
-From there on everything behaves as with real hardware, with the API-backed BMC client standing in for IPMI or Redfish.
+Each machine's launcher process serves a small per-machine HTTP power API (power on and off, reboot, one-time PXE boot, status), and its address is recorded in the machine's launch config file under the provisioner state directory.
+There are two ways for the provider to power-control the emulated machines, and the virtual BMC mode is the one CI uses.
+
+With `qemu-up --virtual-bmc`, each machine gets a real emulated IPMI BMC, hosted in-process by `qemu-up`, which stays running as the BMC supervisor after creating the machines.
+Each BMC serves IPMI-over-LAN on an OS-assigned loopback port and maps power and boot operations onto the launcher's HTTP power API, so the provider drives its production IPMI path with no test-specific flags.
+On linux/amd64 the machine also gets an in-band IPMI device (`/dev/ipmi0`) through the QEMU KCS device, so the agent discovers the BMC and creates the IPMI user as it does on physical hardware.
+On other platforms the BMC is LAN-only, and the machines are registered with the seeded admin credentials (`--virtual-bmc-username` and `--virtual-bmc-password`).
+A machine set created with `--virtual-bmc` cannot be re-attached by a fresh `qemu-up`, because the BMCs only ever lived in the previous process, so destroy and recreate the set instead.
+
+The older alternative is agent test mode: the provider is run with `--agent-test-mode` and with `--api-power-mgmt-state-dir` pointing at the provisioner state directory.
+In agent test mode the provider boots agents with the test-mode kernel argument, the agent reports API-based power management instead of configuring IPMI, and the provider looks up each machine's power API address in the state directory by node UUID, with the API-backed BMC client standing in for IPMI or Redfish.
 
 The provider and `qemu-up` also run natively outside docker.
 A fresh clone needs `make fetch-source-assets` once before any native Go build, because the iPXE binaries referenced by `go:embed` are not committed, and `go build ./...` fails with a missing-embed-file error without them.
 Some UEFI PXE firmware, notably EDK2 in QEMU, rejects ProxyDHCP offers; `qemu-up --pxe-boot-via-dhcpd` makes the provisioner's own DHCP server hand out the boot file directly, chosen by machine firmware and architecture.
 That option applies only when the machines are created, so destroy and recreate an existing set to change it.
 
-`hack/test/integration.sh` wires this together end to end: it builds the provider image, brings up emulated machines with `qemu-up`, starts Vault and Omni in containers, creates the infra provider with `omnictl infraprovider create`, runs the provider in agent test mode, and then runs Omni's integration test suite against the whole stack.
+`hack/test/integration.sh` wires this together end to end: it builds the provider image, brings up emulated machines with `qemu-up --virtual-bmc` (left running in the background to host the BMCs), starts Vault and Omni in containers, creates the infra provider with `omnictl infraprovider create`, runs the provider against the emulated BMCs over IPMI, and then runs Omni's integration test suite against the whole stack.
 It runs in CI through the `run-integration-test` make target.
-Agent test mode is a development-only feature, so it is intentionally not part of the public documentation.
+The virtual BMC and agent test mode are development-only features, so they are intentionally not part of the public documentation.
 
 ## Generated files and rekres
 
@@ -341,7 +348,7 @@ Never use `-u` or `all`, since those drag indirect deps past what direct deps re
 
 Bumping `talos/pkg/machinery` (Talos's public API) is almost always safe, including to an alpha, because it is backwards compatible.
 When the latest `image-factory` or `omni/client` require a Talos prerelease, pin the prerelease first (`go get github.com/siderolabs/talos@<prerelease> github.com/siderolabs/talos/pkg/machinery@<prerelease>`), then run the direct-deps bump so it resolves cleanly.
-A machinery jump can break a few call sites, so expect to fix them (for example the `image-factory` `SchematicCreate` return signature or renamed Talos `provision` options), and verify with `go build ./...` first (on a fresh clone, `make fetch-source-assets` before building).
+A Talos or `omni/client` jump can break a few call sites, so expect to fix them (for example the `omni/client` boot asset API that `internal/provider/imagefactory` calls, or renamed Talos `provision` options), and verify with `go build ./...` first (on a fresh clone, `make fetch-source-assets` before building).
 
 Gates, in order, using the make targets, which are authoritative: `make lint-fmt`, `make lint` (includes govulncheck and markdownlint), `make generate`, and `make unit-tests`.
 
