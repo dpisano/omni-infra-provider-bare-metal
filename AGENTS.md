@@ -153,7 +153,9 @@ The most relevant for this repo's work:
 - `--always-netboot` never hands an installed machine off to its disk and serves it Talos over the network on every boot instead.
 - `--rpi-firmware-path` points at the Raspberry Pi boot files to serve over TFTP, see the section below.
 - The `--redfish-*` and `--ipmi-*` flags tune BMC behavior.
-- `--agent-test-mode` boots the agent with API-based power management for QEMU test machines.
+- `--agent-test-mode` boots the agent with API-based power management for QEMU test machines, and requires `--api-power-mgmt-state-dir`, which is where that address is read from.
+  The provider rejects the two apart at startup, because otherwise the mismatch only surfaces once Omni accepts a machine, as a `BMCConfigurationController` reconcile error naming an empty path.
+  Carrying this flag over to real hardware is the way that happens: such an agent never configures IPMI.
 - The `--tls-*` flags choose between ephemeral auto-generated certs and persistent operator-supplied certs.
 
 ## What the DHCP proxy has to put in a reply

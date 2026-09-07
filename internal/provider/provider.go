@@ -75,6 +75,49 @@ func New(options Options, logger *zap.Logger) *Provider {
 	}
 }
 
+// validateOptions rejects flag combinations that cannot work, before anything starts.
+//
+// The point of doing this here rather than where each option is used is that most of these only
+// bite much later, per machine, once Omni accepts one, and read as an unrelated controller error
+// at that point.
+func validateOptions(options Options, pxeBootMode pxe.BootMode) error {
+	if options.SecureBootEnabled {
+		if pxeBootMode != pxe.BootModeUEFI {
+			return errors.New("secure boot is only supported with UEFI boot mode")
+		}
+
+		if options.UseLocalBootAssets {
+			return errors.New("local boot assets cannot be used with secure boot")
+		}
+	}
+
+	// Agent test mode boots the agent with the test mode kernel argument, and such an agent reports
+	// API-based power management instead of configuring IPMI. The provider then has to look that
+	// machine's power API address up in the state directory, so without one there is nothing to
+	// look it up in, and the failure surfaces only once a machine is accepted, as a per-machine
+	// BMCConfigurationController error naming an empty path.
+	if options.AgentTestMode && options.APIPowerMgmtStateDir == "" {
+		return errors.New("--agent-test-mode requires --api-power-mgmt-state-dir, which is where each machine's power management API address is read from: " +
+			"agent test mode is for the QEMU machines that qemu-up and 'talosctl cluster create' create, so drop it when running against real hardware, " +
+			"where the agent configures IPMI instead")
+	}
+
+	// A path that is not there is almost always a volume that was not mounted into the container,
+	// and it would otherwise go unnoticed until a machine needed it.
+	if options.APIPowerMgmtStateDir != "" {
+		info, err := os.Stat(options.APIPowerMgmtStateDir)
+
+		switch {
+		case err != nil:
+			return fmt.Errorf("failed to read the API power management state directory given by --api-power-mgmt-state-dir: %w", err)
+		case !info.IsDir():
+			return fmt.Errorf("the API power management state directory given by --api-power-mgmt-state-dir is not a directory: %q", options.APIPowerMgmtStateDir)
+		}
+	}
+
+	return nil
+}
+
 // Run runs the provider.
 //
 //nolint:gocyclo,cyclop,gocognit,maintidx
@@ -84,14 +127,8 @@ func (p *Provider) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to parse IPMI PXE boot mode: %w", err)
 	}
 
-	if p.options.SecureBootEnabled {
-		if pxeBootMode != pxe.BootModeUEFI {
-			return errors.New("secure boot is only supported with UEFI boot mode")
-		}
-
-		if p.options.UseLocalBootAssets {
-			return errors.New("local boot assets cannot be used with secure boot")
-		}
+	if err = validateOptions(p.options, pxeBootMode); err != nil {
+		return err
 	}
 
 	if p.options.UseLocalBootAssets {
