@@ -273,6 +273,7 @@ The commit a release currently names is written into its notes, so pinning to th
 The redo is triggered by `workflow_run` on `docker-image.yaml` completing on `main`, rather than by the push itself, so the image for the commit already exists by the time the release wants it.
 It is then reused rather than rebuilt: `docker buildx imagetools create` copies the index from the `git describe` tag `main` published onto the version tag, which within one repository transfers no layer and carries every architecture along.
 That `describe` name has to be read before the tag moves, or it would resolve to the version itself.
+It is the Makefile's derivation of `IMAGE_TAG` minus `--dirty`, which git rejects outright alongside a commit-ish, and which changes no output for the always-clean checkout an Actions runner has.
 A reusable workflow called from a workflow raises no `workflow_run` event of its own, so the release's own image build cannot re-trigger the release; even if that changed, the next run would find the tag already on `main` and stop.
 
 The image is otherwise built by calling `docker-image.yaml` at the new tag rather than by letting the tag push trigger it, because a tag pushed with `GITHUB_TOKEN` starts no workflow run, and building before publishing keeps a release from ever pointing at an image that does not exist.
