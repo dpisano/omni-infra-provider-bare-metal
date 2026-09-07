@@ -1,22 +1,41 @@
 # THIS FILE IS HAND WRITTEN. kres does not generate it, and must not be told to: see the GitHub
 # workflows section of AGENTS.md.
 #
-# Cuts a release here whenever upstream cuts one. Upstream releases a few times a year, and this
-# fork tracks it rather than versioning independently, so a fork release is named after the
-# upstream release it corresponds to: upstream v0.13.0 makes v0.13.0 here.
+# Cuts a release here whenever upstream cuts one, and redoes it whenever main moves on afterwards.
+# Upstream releases a few times a year, and this fork tracks it rather than versioning
+# independently, so a fork release is named after the upstream release it corresponds to: upstream
+# v0.13.0 makes v0.13.0 here.
 #
 # The tag points at this fork's main, not at upstream's release commit, so it covers upstream's
 # release plus whatever this fork adds on top. It is only created once main actually contains the
 # upstream release commit, which means it waits for the sync pull request from upstream-sync.yaml
 # to be reviewed and merged by a human. Nothing here merges anything.
+#
+# Because the tag tracks main rather than a fixed commit, it moves as the fork adds to a release,
+# and the image under that tag is replaced along with it. A release is therefore mutable here: it
+# always names the newest main that carries the corresponding upstream release, not the state of
+# main on the day upstream cut it.
 
 name: upstream-release
 
 concurrency:
   group: upstream-release
+  # moving a tag and replacing an image tag are not safe to run twice at once, and a superseded
+  # run is harmless anyway: the next one sees main has moved again and redoes the release
   cancel-in-progress: false
 
 'on':
+  # Runs after the image for a commit on main exists, rather than on the push itself, so the redo
+  # below has something to retag and never has to rebuild what was just built.
+  #
+  # A reusable workflow called from this file runs as part of this run and does not raise a
+  # workflow_run event of its own, so the release build cannot trigger this workflow again. Were
+  # that ever to change, the loop would still stop after one extra run, which would find the tag
+  # already pointing at main and do nothing.
+  workflow_run:
+    workflows: [docker-image]
+    types: [completed]
+    branches: [main]
   schedule:
     # daily, a couple of hours after the weekly sync, so a merged sync is picked up the next day
     - cron: '0 8 * * *'
@@ -26,24 +45,40 @@ concurrency:
 
 env:
   UPSTREAM_REPO: siderolabs/omni-infra-provider-bare-metal
+  PACKAGE: omni-infra-provider-bare-metal
 
 jobs:
   check:
-    name: check for a new upstream release
+    name: check what needs releasing
     runs-on: ubuntu-latest
+    # a failed or cancelled image build has published nothing, so there is nothing to release from
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     permissions:
       contents: read
+      # to see whether the image for this commit was already published, below
+      packages: read
     outputs:
       release: ${{ steps.decide.outputs.release }}
+      build: ${{ steps.decide.outputs.build }}
       version: ${{ steps.decide.outputs.version }}
+      head: ${{ steps.decide.outputs.head }}
+      source_image: ${{ steps.decide.outputs.source_image }}
     steps:
       - name: checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # version: v7.0.0
         with:
-          # the ancestry check below needs the real history, not a shallow slice of it
+          # the ancestry check and `git describe` below need the real history and the tags, not a
+          # shallow slice of them
           fetch-depth: 0
 
-      - name: decide whether to release
+      - name: log in to ghcr.io
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # version: v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: decide what to do
         id: decide
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -52,11 +87,11 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "latest upstream release is ${version}" | tee -a "$GITHUB_STEP_SUMMARY"
 
-          if gh release view "${version}" >/dev/null 2>&1; then
-            echo "${version} is already released here, nothing to do" | tee -a "$GITHUB_STEP_SUMMARY"
+          nothing_to_do() {
+            echo "$1" | tee -a "$GITHUB_STEP_SUMMARY"
             echo "release=false" >> "$GITHUB_OUTPUT"
             exit 0
-          fi
+          }
 
           # The upstream release commit has to actually be in this fork, or the release would be
           # named after upstream code it does not contain. Until the sync merges, this just waits.
@@ -70,11 +105,48 @@ jobs:
               echo "Merge the sync pull request that upstream-sync.yaml opens, and this will pick it up."
             } >> "$GITHUB_STEP_SUMMARY"
 
-            echo "release=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            nothing_to_do "main does not contain upstream ${version} yet"
+          fi
+
+          # Everything below releases main as it is now, whether for the first time or again.
+          head="$(git rev-parse origin/main)"
+          echo "head=${head}" >> "$GITHUB_OUTPUT"
+
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${PACKAGE}"
+          tag_commit="$(git rev-parse --verify --quiet "refs/tags/${version}^{commit}" || true)"
+
+          # A release is finished only when all three of its parts name this commit. Checking all
+          # three, rather than just the tag, is what lets a rerun finish a release whose image
+          # build or publish step failed the first time, instead of reporting nothing to do.
+          if [ "${tag_commit}" = "${head}" ] \
+            && docker buildx imagetools inspect "${image}:${version}" >/dev/null 2>&1 \
+            && gh release view "${version}" >/dev/null 2>&1; then
+            nothing_to_do "${version} already releases main (${head:0:8}), nothing to redo"
           fi
 
           echo "release=true" >> "$GITHUB_OUTPUT"
+
+          if [ -z "${tag_commit}" ]; then
+            echo "${version} has not been released here yet" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "redoing ${version} onto ${head:0:8}" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # The tag is about to move onto a commit that main has already published an image for,
+          # under its `git describe` name, so retagging that image costs no build: within one
+          # repository it is a manifest copy. This has to be read before the tag moves, or describe
+          # would resolve to the version itself.
+          describe="$(git describe --tag --always --dirty --match 'v[0-9]*' "${head}")"
+
+          if docker buildx imagetools inspect "${image}:${describe}" >/dev/null 2>&1; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "source_image=${image}:${describe}" >> "$GITHUB_OUTPUT"
+            echo "reusing the image main published as ${image}:${describe}" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            # Nothing to reuse, which is what a failed image build for this commit leaves behind.
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "building the image, as ${image}:${describe} is not there to reuse" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
 
   tag:
     name: tag main
@@ -88,36 +160,37 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # version: v7.0.0
         with:
           fetch-depth: 0
-          ref: main
+          ref: ${{ needs.check.outputs.head }}
 
       # Tagging before the image is built leaves a tag behind if that build fails. That is on
-      # purpose: creating the tag is skipped when it already exists, so a rerun after a fixed
-      # build reuses it and finishes the release, rather than needing the tag cleaned up first.
-      - name: create the tag
+      # purpose: a rerun moves the tag onto the same commit again and finishes the release, rather
+      # than needing the tag cleaned up first.
+      - name: move the tag onto main
         env:
           VERSION: ${{ needs.check.outputs.version }}
+          HEAD: ${{ needs.check.outputs.head }}
         run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
-            echo "tag ${VERSION} already exists, reusing it" | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
           git config user.name  'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
-          git tag -a "${VERSION}" -m "${VERSION}"
-          git push --quiet origin "refs/tags/${VERSION}"
+          # --force, because a release is redone by moving its tag onto the newer main rather than
+          # by inventing a version number this fork does not have.
+          git tag --force --annotate "${VERSION}" -m "${VERSION}" "${HEAD}"
+          git push --force --quiet origin "refs/tags/${VERSION}"
 
-          echo "tagged $(git rev-parse --short=8 HEAD) as ${VERSION}" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "tagged ${HEAD:0:8} as ${VERSION}" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # Builds the image at the tag, so `git describe` inside the build resolves to exactly the
   # version. This is a call rather than a trigger because a tag pushed with GITHUB_TOKEN does not
   # start a workflow run, and it runs before the release so a release never points at an image
   # that does not exist.
+  #
+  # Only for a version that has never been built. Redoing a release retags what main already
+  # published instead, in the job below.
   image:
     name: image
     needs: [check, tag]
-    if: needs.check.outputs.release == 'true'
+    if: needs.check.outputs.release == 'true' && needs.check.outputs.build == 'true'
     permissions:
       contents: read
       packages: write
@@ -125,11 +198,43 @@ jobs:
     with:
       ref: ${{ needs.check.outputs.version }}
 
+  retag:
+    name: retag the image built for main
+    runs-on: ubuntu-latest
+    needs: [check, tag]
+    if: needs.check.outputs.release == 'true' && needs.check.outputs.build == 'false'
+    permissions:
+      packages: write
+    steps:
+      - name: log in to ghcr.io
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # version: v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: point the version tag at it
+        env:
+          SOURCE_IMAGE: ${{ needs.check.outputs.source_image }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          target="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${PACKAGE}:${VERSION}"
+
+          # A copy within one repository, so this republishes the index and nothing else moves:
+          # every architecture the source carries comes along, and no layer is transferred. The
+          # source and the target are the same tag when the tag was already on this commit and only
+          # the release itself was missing, which this handles as the no-op it is.
+          docker buildx imagetools create --tag "${target}" "${SOURCE_IMAGE}"
+
+          echo "retagged ${SOURCE_IMAGE} as ${target}" | tee -a "$GITHUB_STEP_SUMMARY"
+
   release:
     name: publish the release
     runs-on: ubuntu-latest
-    needs: [check, tag, image]
-    if: needs.check.outputs.release == 'true'
+    needs: [check, tag, image, retag]
+    # `image` and `retag` are alternatives, so one of them is always skipped, which rules out
+    # success() here. A skipped need is not a failed one, so this still stops on a real failure.
+    if: ${{ !cancelled() && !failure() && needs.check.outputs.release == 'true' }}
     permissions:
       contents: write
     steps:
@@ -140,17 +245,23 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.check.outputs.version }}
+          HEAD: ${{ needs.check.outputs.head }}
         run: |
           owner="${GITHUB_REPOSITORY_OWNER,,}"
 
           sed \
             -e "s|__VERSION__|${VERSION}|g" \
             -e "s|__UPSTREAM_REPO__|${UPSTREAM_REPO}|g" \
-            -e "s|__IMAGE__|ghcr.io/${owner}/omni-infra-provider-bare-metal:${VERSION}|g" \
+            -e "s|__IMAGE__|ghcr.io/${owner}/${PACKAGE}:${VERSION}|g" \
+            -e "s|__COMMIT__|${HEAD}|g" \
             .github/upstream-release-notes.md > notes.md
 
-          gh release create "${VERSION}" \
-            --title "${VERSION}" \
-            --notes-file notes.md
-
-          echo "released ${VERSION}" | tee -a "$GITHUB_STEP_SUMMARY"
+          # A release is remade in place when main moves, so the notes are rewritten rather than a
+          # second release being created. The tag has already moved, and the release follows it.
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            gh release edit "${VERSION}" --notes-file notes.md
+            echo "updated the ${VERSION} release, now at ${HEAD:0:8}" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            gh release create "${VERSION}" --title "${VERSION}" --notes-file notes.md
+            echo "released ${VERSION} at ${HEAD:0:8}" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi

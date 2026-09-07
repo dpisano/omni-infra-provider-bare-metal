@@ -261,12 +261,23 @@ It skips while an earlier sync pull request is still open, so syncs do not stack
 GitHub does not run workflows on a pull request opened with `GITHUB_TOKEN`, so a sync pull request arrives with no checks on it, and closing and reopening it is what runs them.
 Read every sync rather than merging it on sight: this fork diverges in ways an upstream change can invalidate with no textual conflict at all, the clearest being the arm64 agent-mode extension list, which an extension added upstream will never reach.
 
-`upstream-release.yaml` cuts a release here whenever upstream cuts one, checking daily.
+`upstream-release.yaml` cuts a release here whenever upstream cuts one, and redoes it whenever `main` moves on afterwards.
 This fork does not version independently, so a release is named after the upstream release it corresponds to, and upstream `v0.13.0` becomes `v0.13.0` here.
 The tag points at this fork's `main` rather than at upstream's release commit, so it covers upstream's release plus what this fork adds, and it is therefore a different commit than upstream's tag of the same name.
 It is only created once `main` actually contains the upstream release commit, which is checked with `git merge-base --is-ancestor`, so the release waits for a human to merge the sync pull request instead of naming itself after code the fork does not have.
-The image is built by calling `docker-image.yaml` at the new tag rather than by letting the tag push trigger it, because a tag pushed with `GITHUB_TOKEN` starts no workflow run, and building before publishing keeps a release from ever pointing at an image that does not exist.
-Creating the tag is skipped when it already exists, so a rerun after a failed image build reuses the tag and finishes the release rather than needing it cleaned up first.
+
+Because the tag tracks `main` rather than a fixed commit, a release here is mutable: it always names the newest `main` carrying the corresponding upstream release, not the state of `main` on the day upstream cut it.
+Redoing one moves the tag with `git tag --force` and replaces the image under that tag, so anyone who pulled the version earlier gets different bits under the same name, which is the deliberate trade for a release that does not go stale as the fork adds to it.
+The commit a release currently names is written into its notes, so pinning to that commit's own image tag is the way to get bits that do not change.
+
+The redo is triggered by `workflow_run` on `docker-image.yaml` completing on `main`, rather than by the push itself, so the image for the commit already exists by the time the release wants it.
+It is then reused rather than rebuilt: `docker buildx imagetools create` copies the index from the `git describe` tag `main` published onto the version tag, which within one repository transfers no layer and carries every architecture along.
+That `describe` name has to be read before the tag moves, or it would resolve to the version itself.
+A reusable workflow called from a workflow raises no `workflow_run` event of its own, so the release's own image build cannot re-trigger the release; even if that changed, the next run would find the tag already on `main` and stop.
+
+The image is otherwise built by calling `docker-image.yaml` at the new tag rather than by letting the tag push trigger it, because a tag pushed with `GITHUB_TOKEN` starts no workflow run, and building before publishing keeps a release from ever pointing at an image that does not exist.
+A release counts as finished only when the tag, the image and the GitHub release all name the same commit, and all three are checked rather than just the tag.
+That is what lets a rerun finish a release whose image build or publish step failed, instead of seeing the tag in place and reporting nothing to do.
 
 `cleanup-images.yaml` prunes the container registry weekly, running `hack/prune-images.sh`.
 Every commit to `main` publishes an image, so without it the registry grows without bound.
