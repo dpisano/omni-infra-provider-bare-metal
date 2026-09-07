@@ -64,6 +64,9 @@ To boot one:
 3. Run the provider with `--always-netboot`, and with `--allow-machines-without-bmc` unless the board has some form of external power control.
    `--always-netboot` is not optional here: Omni installs Talos without a board overlay, so the installed disk has no bootloader the Pi firmware can start.
 
+Without `--rpi-firmware-path`, the provider recognises a board but leaves it alone rather than offering it a boot it cannot serve, and logs a warning naming the flag the first time it sees each board.
+A board that was offered a boot with no files behind it just loops fetching `start4.elf` and its siblings, which shows up only as a run of `file not found` in the log.
+
 Only the Raspberry Pi 4 and CM4 are supported.
 A Pi 3 additionally needs `bootcode.bin`, which on a Pi 4 lives in the on-board EEPROM.
 

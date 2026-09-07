@@ -5,6 +5,7 @@
 package dhcp_test
 
 import (
+	"bytes"
 	"net"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/insomniacslk/dhcp/iana"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap/zaptest"
 
 	"github.com/siderolabs/omni-infra-provider-bare-metal/internal/provider/dhcp"
 )
@@ -322,6 +324,81 @@ func TestValidateDHCPRaspberryPi(t *testing.T) {
 
 		assert.Equal(t, dhcp.FirmwareARMEFI, fwtype)
 	})
+}
+
+func TestProxySkipsRaspberryPiWithoutFirmware(t *testing.T) {
+	t.Parallel()
+
+	// A Raspberry Pi boot offer is a promise to serve a fixed set of files over TFTP. Making it
+	// with no files configured leaves a board fetching start4.elf and its siblings in a loop, and
+	// the only sign of what is wrong is a run of "file not found" in the TFTP log.
+	t.Run("a board is left alone when no firmware is configured", func(t *testing.T) {
+		t.Parallel()
+
+		proxy := dhcp.NewProxy(dhcp.ProxyOptions{
+			APIAdvertiseAddress: "192.168.1.100",
+			APIPort:             50042,
+			ServeRaspberryPi:    false,
+		}, zaptest.NewLogger(t))
+
+		conn := &capturingConn{}
+		proxy.HandlePacket(dhcp.Port67)(conn, &net.UDPAddr{IP: net.IPv4bcast, Port: 68}, newRPiPacket(t, piMAC))
+
+		assert.Empty(t, conn.written, "a board that cannot be served must not be offered a boot")
+	})
+
+	t.Run("a board is answered when firmware is configured", func(t *testing.T) {
+		t.Parallel()
+
+		proxy := dhcp.NewProxy(dhcp.ProxyOptions{
+			APIAdvertiseAddress: "192.168.1.100",
+			APIPort:             50042,
+			ServeRaspberryPi:    true,
+		}, zaptest.NewLogger(t))
+
+		conn := &capturingConn{}
+		proxy.HandlePacket(dhcp.Port67)(conn, &net.UDPAddr{IP: net.IPv4bcast, Port: 68}, newRPiPacket(t, piMAC))
+
+		require.Len(t, conn.written, 1)
+
+		resp, err := dhcpv4.FromBytes(conn.written[0])
+		require.NoError(t, err)
+
+		assert.Contains(t, string(resp.GetOneOption(dhcpv4.OptionVendorSpecificInformation)), "Raspberry Pi Boot")
+	})
+
+	t.Run("an x86 client is unaffected by the Raspberry Pi setting", func(t *testing.T) {
+		t.Parallel()
+
+		proxy := dhcp.NewProxy(dhcp.ProxyOptions{
+			APIAdvertiseAddress: "192.168.1.100",
+			APIPort:             50042,
+			ServeRaspberryPi:    false,
+		}, zaptest.NewLogger(t))
+
+		conn := &capturingConn{}
+		proxy.HandlePacket(dhcp.Port67)(conn, &net.UDPAddr{IP: net.IPv4bcast, Port: 68}, newPXEPacket(t, dhcpv4.MessageTypeDiscover))
+
+		require.Len(t, conn.written, 1)
+
+		resp, err := dhcpv4.FromBytes(conn.written[0])
+		require.NoError(t, err)
+
+		assert.Equal(t, "snp.efi", resp.BootFileNameOption())
+	})
+}
+
+// capturingConn is a net.PacketConn that records what the proxy writes and does nothing else.
+type capturingConn struct {
+	net.PacketConn
+
+	written [][]byte
+}
+
+func (c *capturingConn) WriteTo(b []byte, _ net.Addr) (int, error) {
+	c.written = append(c.written, bytes.Clone(b))
+
+	return len(b), nil
 }
 
 func TestOfferDHCPRaspberryPi(t *testing.T) {
