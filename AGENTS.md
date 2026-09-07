@@ -175,7 +175,12 @@ Only the three plain-TFTP firmware types get this: the iPXE and HTTP boot ones r
 ## Machines without a BMC
 
 Some machines have no IPMI and no Redfish at all, so there is nothing to talk to out of band.
-Under `--allow-machines-without-bmc`, a machine whose agent reports no power management is recorded as manually powered (`BMCConfigurationSpec.Manual`) rather than rejected, which is what lets it become ready to use instead of being pinned to agent mode forever.
+Under `--allow-machines-without-bmc`, such a machine is recorded as manually powered (`BMCConfigurationSpec.Manual`) rather than rejected, which is what lets it become ready to use instead of being pinned to agent mode forever.
+
+How such a machine announces itself is worth knowing, because it is not what it looks like.
+The agent has no way to say "there is nothing here": outside test mode `GetPowerManagement` only ever returns with the IPMI field filled in, so a machine with no BMC surfaces as the agent failing to open `/dev/ipmi0` and turning that into an `Internal` gRPC error, `error creating ipmi client: failed to create IPMI client: ipmi dev file not opened`.
+The provider therefore recognizes that error, and the empty response it also accepts is something no released agent actually sends.
+Matching an error message is unpleasant, and it is kept narrow on purpose: only the failure to create the client counts, since a failure in a later call through that client means the machine does have a BMC that something else went wrong with, and writing it off as having none would be wrong and would stick.
 
 BMC clients report capabilities (`bmc.Capabilities`), and callers check them before issuing an operation instead of calling and handling the failure.
 The manual client supports nothing, so the provider never reads such a machine's power state, powers it on or off, or sets a one-time boot device, and its power state is instead inferred from whether its agent answers.

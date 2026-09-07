@@ -9,6 +9,8 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"slices"
+	"strings"
 
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/controller/generic/qtransform"
@@ -120,10 +122,19 @@ func (helper *bmcConfigurationControllerHelper) transform(ctx context.Context, r
 
 	powerManagementOnAgent, err := helper.agentClient.GetPowerManagement(ctx, id)
 	if err != nil {
-		return fmt.Errorf("failed to get power management information: %w", err)
+		if !helper.hasNoBMC(nil, err) {
+			return fmt.Errorf("failed to get power management information: %w", err)
+		}
+
+		logger.Info("machine has no BMC to talk to, record it as manually powered", zap.Error(err))
+
+		bmcConfiguration.TypedSpec().Value.ManuallyConfigured = false
+		bmcConfiguration.TypedSpec().Value.Manual = &specs.BMCConfigurationSpec_Manual{}
+
+		return nil
 	}
 
-	if helper.reportsNoBMC(powerManagementOnAgent) {
+	if helper.hasNoBMC(powerManagementOnAgent, nil) {
 		logger.Info("machine reports no power management, record it as manually powered")
 
 		bmcConfiguration.TypedSpec().Value.ManuallyConfigured = false
@@ -166,16 +177,43 @@ func (helper *bmcConfigurationControllerHelper) transform(ctx context.Context, r
 	return nil
 }
 
-// reportsNoBMC reports whether the machine has no BMC at all and the provider is allowed to accept it.
+// noBMCErrorMarkers identify a GetPowerManagement failure that means the machine has no BMC, rather
+// than something that might succeed on the next attempt.
+//
+// The agent cannot say "there is nothing here". Outside test mode GetPowerManagement only ever
+// returns with the IPMI field filled in, so the sole way it reports a machine with no BMC is by
+// failing to open the local IPMI device and turning that into an Internal error. Recognizing that
+// error is therefore what makes AllowMachinesWithoutBMC work on real hardware at all: an empty
+// response, which is the other thing it accepts, is something the agent never sends.
+//
+// Matching an error message is unpleasant and it is deliberately narrow. It covers only the failure
+// to create the client, which happens when the device cannot be opened, and not the later calls
+// through it, which failing means the machine does have a BMC that something else went wrong with.
+var noBMCErrorMarkers = []string{
+	"ipmi dev file not opened",     // the innermost failure, from opening /dev/ipmi0
+	"creating ipmi client",         // the agent's gRPC status wrapping it
+	"failed to create ipmi client", // the agent's own wrapper inside that
+}
+
+// hasNoBMC reports whether the machine has no BMC at all and the provider is allowed to accept it.
 //
 // Such a machine is recorded as manually powered so it can still become ready to use, rather than
-// failing here on every reconcile forever.
-func (helper *bmcConfigurationControllerHelper) reportsNoBMC(powerManagement *agentpb.GetPowerManagementResponse) bool {
+// failing here on every reconcile forever. Exactly one of powerManagement and err is expected to be
+// set, matching whichever way GetPowerManagement returned.
+func (helper *bmcConfigurationControllerHelper) hasNoBMC(powerManagement *agentpb.GetPowerManagementResponse, err error) bool {
 	if !helper.options.AllowMachinesWithoutBMC {
 		return false
 	}
 
-	return powerManagement.Api == nil && powerManagement.Ipmi == nil
+	if err != nil {
+		message := strings.ToLower(err.Error())
+
+		return slices.ContainsFunc(noBMCErrorMarkers, func(marker string) bool {
+			return strings.Contains(message, marker)
+		})
+	}
+
+	return powerManagement.GetApi() == nil && powerManagement.GetIpmi() == nil
 }
 
 func (helper *bmcConfigurationControllerHelper) storeUserProvidedBMCConfig(userConfig *infra.BMCConfig, bmcConfiguration *resources.BMCConfiguration, logger *zap.Logger) error {

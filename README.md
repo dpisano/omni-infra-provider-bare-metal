@@ -27,7 +27,10 @@ To run the provider, you need:
 
 Some machines have no IPMI and no Redfish at all, so there is nothing for the provider to talk to out of band.
 By default the provider fails to configure one, and it never becomes ready to use, sitting in agent mode instead.
+In the log this shows up as the agent reporting `error creating ipmi client: failed to create IPMI client: ipmi dev file not opened`, and the provider's `BMCConfigurationController` failing to reconcile with the same message every minute.
 Pass `--allow-machines-without-bmc` to record it as manually powered, which lets it join the pool like any other machine.
+
+If the machine does have a BMC, that same error means the agent could not reach it, and the flag is the wrong answer: check that `/dev/ipmi0` exists on the booted machine and that the BMC is enabled in firmware.
 
 What changes for such a machine:
 
