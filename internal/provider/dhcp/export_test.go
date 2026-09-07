@@ -4,7 +4,19 @@
 
 package dhcp
 
+import (
+	"net"
+
+	"github.com/insomniacslk/dhcp/dhcpv4"
+)
+
 var (
 	IsBootDHCP   = isBootDHCP
 	ValidateDHCP = validateDHCP
 )
+
+// HandlePacket exposes the packet handler, so the decisions it makes before building a response can
+// be driven from a test without standing up a real DHCP listener.
+func (p *Proxy) HandlePacket(port int) func(net.PacketConn, net.Addr, *dhcpv4.DHCPv4) {
+	return p.handlePacket(port)
+}

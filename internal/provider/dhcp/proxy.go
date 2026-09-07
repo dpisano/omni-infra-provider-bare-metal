@@ -11,6 +11,7 @@ import (
 	"net"
 	"slices"
 	"strconv"
+	"sync"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/server4"
@@ -27,23 +28,40 @@ const (
 	Port4011 = 4011
 )
 
+// ProxyOptions configures the DHCP proxy.
+type ProxyOptions struct {
+	APIAdvertiseAddress string
+	ProxyIfaceOrIP      string
+	APIPort             int
+
+	// DisableBroadcastListener leaves port 67 alone and listens only on port 4011, for a provider
+	// running on the same host as the DHCP server.
+	DisableBroadcastListener bool
+
+	// ServeRaspberryPi reports whether the Raspberry Pi boot files are configured and served.
+	//
+	// A board is offered a Raspberry Pi boot only when they are, because that offer is a promise to
+	// serve a fixed set of files over TFTP, and a board that takes it and finds nothing hangs there
+	// retrying rather than falling back to its next boot device.
+	ServeRaspberryPi bool
+}
+
 // Proxy is a DHCP proxy server, adding PXE boot options to the DHCP responses.
 type Proxy struct {
-	logger                   *zap.Logger
-	apiAdvertiseAddress      string
-	proxyIfaceOrIP           string
-	apiPort                  int
-	disableBroadcastListener bool
+	logger *zap.Logger
+
+	// warnedNoRPiFirmware holds the boards already warned about, so a board looping on its boot
+	// retries is reported once rather than every few seconds for as long as it is powered on.
+	warnedNoRPiFirmware sync.Map
+
+	options ProxyOptions
 }
 
 // NewProxy creates a new DHCP proxy server.
-func NewProxy(apiAdvertiseAddress string, apiPort int, proxyIfaceOrIP string, disableBroadcastListener bool, logger *zap.Logger) *Proxy {
+func NewProxy(options ProxyOptions, logger *zap.Logger) *Proxy {
 	return &Proxy{
-		apiAdvertiseAddress:      apiAdvertiseAddress,
-		apiPort:                  apiPort,
-		proxyIfaceOrIP:           proxyIfaceOrIP,
-		disableBroadcastListener: disableBroadcastListener,
-		logger:                   logger,
+		options: options,
+		logger:  logger,
 	}
 }
 
@@ -59,14 +77,14 @@ func NewProxy(apiAdvertiseAddress string, apiPort int, proxyIfaceOrIP string, di
 // When disableBroadcastListener is true, only port 4011 is used. This is for deployments
 // where the provider runs on the same host as the DHCP server and cannot bind to port 67.
 func (p *Proxy) Run(ctx context.Context) error {
-	iface, err := p.determineInterface(p.proxyIfaceOrIP)
+	iface, err := p.determineInterface(p.options.ProxyIfaceOrIP)
 	if err != nil {
 		return fmt.Errorf("failed to determine interface: %w", err)
 	}
 
 	eg, ctx := errgroup.WithContext(ctx)
 
-	if !p.disableBroadcastListener {
+	if !p.options.DisableBroadcastListener {
 		p.logger.Info("starting DHCP proxy broadcast listener on port 67")
 
 		eg.Go(func() error {
@@ -173,7 +191,13 @@ func (p *Proxy) handlePacket(port int) func(conn net.PacketConn, peer net.Addr, 
 			return
 		}
 
-		resp, err := OfferDHCP(m, p.apiAdvertiseAddress, p.apiPort, fwtype, port)
+		if fwtype == FirmwareRPi && !p.options.ServeRaspberryPi {
+			p.warnNoRPiFirmware(logger, m.ClientHWAddr)
+
+			return
+		}
+
+		resp, err := OfferDHCP(m, p.options.APIAdvertiseAddress, p.options.APIPort, fwtype, port)
 		if err != nil {
 			logger.Error("failed to construct ProxyDHCP response", zap.Error(err))
 
@@ -187,6 +211,22 @@ func (p *Proxy) handlePacket(port int) func(conn net.PacketConn, peer net.Addr, 
 			logger.Error("failure sending response", zap.Error(err))
 		}
 	}
+}
+
+// warnNoRPiFirmware reports a Raspberry Pi that cannot be booted because its boot files were never
+// configured, once per board.
+//
+// Without this the only sign is the board asking for start4.elf and its siblings over TFTP and
+// being told each is not found, which names none of the files it is really missing and nothing
+// about the flag that supplies them.
+func (p *Proxy) warnNoRPiFirmware(logger *zap.Logger, hwAddr net.HardwareAddr) {
+	if _, warned := p.warnedNoRPiFirmware.LoadOrStore(hwAddr.String(), struct{}{}); warned {
+		return
+	}
+
+	logger.Warn("a Raspberry Pi asked to network boot, but this provider serves no Raspberry Pi boot files, so it is being left alone. " +
+		"Point --rpi-firmware-path at a directory holding them to boot it, see hack/rpi for what goes in there. " +
+		"A Raspberry Pi also needs --always-netboot, and --allow-machines-without-bmc unless it has external power control")
 }
 
 // isBootDHCP checks if the packet is a PXE boot DHCP packet appropriate for the given port.

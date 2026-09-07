@@ -205,6 +205,10 @@ The boot files themselves are not shipped with the provider, since the GPU firmw
 The operator populates a directory and points `--rpi-firmware-path` at it, and `hack/rpi` holds a `config.txt` to start from and a note on where each file comes from.
 Startup fails when a required file is missing, so a directory that would leave a board hanging is caught up front rather than when a board first tries to boot and silently hangs.
 
+When the flag is not given at all, the DHCP proxy recognises a board and then deliberately does not answer it, warning once per board and naming the flag.
+The reason is that a Raspberry Pi boot offer is a promise to serve a fixed set of files, so making it with nothing behind it leaves the board looping on TFTP fetches that all miss, and the only trace is a run of `file not found` naming files nothing else in the provider mentions.
+Declining to answer is not a worse outcome for the board, which would not have booted either way, and it is a much better one for whoever reads the log.
+
 Only the Raspberry Pi 4 and CM4 are supported.
 A Pi 3 additionally needs `bootcode.bin`, which on a Pi 4 lives in the on-board EEPROM.
 A Pi also needs `--always-netboot`, because Omni installs Talos without a board overlay, so the installed disk has no bootloader the Pi firmware can start.
