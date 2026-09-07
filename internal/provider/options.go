@@ -74,5 +74,9 @@ func DefaultOptions() Options {
 			CertTTL:         24 * time.Hour,
 		},
 		AgentClient: agent.DefaultClientOptions(),
+		// This fork exists for machines that have no BMC, so accepting them is the norm here
+		// rather than something to opt into. Pass --allow-machines-without-bmc=false to have a
+		// machine that reports no BMC rejected instead.
+		AllowMachinesWithoutBMC: true,
 	}
 }

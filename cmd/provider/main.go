@@ -158,9 +158,10 @@ func init() {
 			"This is for machines whose firmware cannot boot the installed system, such as a Raspberry Pi. "+
 			"Note that this makes the provider a hard dependency of every boot: while it is down, a machine that reboots does not come back up.")
 	rootCmd.Flags().BoolVar(&providerOptions.AllowMachinesWithoutBMC, "allow-machines-without-bmc", providerOptions.AllowMachinesWithoutBMC,
-		"Accept machines that report no BMC (no IPMI and no Redfish) instead of rejecting them. "+
+		"Accept machines that have no BMC (no IPMI and no Redfish) instead of rejecting them. "+
 			"The provider never powers such a machine on or off, so a human must do it, and it reboots the machine over its agent. "+
-			"Such machines must be configured to network boot first, as the provider cannot set a one-time boot device for them.")
+			"Such machines must be configured to network boot first, as the provider cannot set a one-time boot device for them. "+
+			"On by default in this fork, which exists for machines without a BMC: pass =false to reject them instead.")
 	rootCmd.Flags().DurationVar(&providerOptions.MinRebootInterval, "min-reboot-interval", providerOptions.MinRebootInterval,
 		"the minimum interval between reboots of the machine issued by the provider. This is to prevent the provider from issuing reboots too frequently.")
 	rootCmd.Flags().BoolVar(

@@ -148,6 +148,10 @@ type agentClientMock struct {
 	getPowerMgmtResponseMap *containers.ConcurrentMap[string, *agentpb.GetPowerManagementResponse]
 	setPowerMgmtRequestCh   chan<- pair.Pair[string, *agentpb.SetPowerManagementRequest]
 	rebootCh                chan<- string
+
+	// getPowerMgmtErr, when set, is returned instead of a response, standing in for an agent that
+	// could not reach a BMC at all.
+	getPowerMgmtErr error
 }
 
 func (a *agentClientMock) Reboot(ctx context.Context, id string) error {
@@ -165,6 +169,10 @@ func (a *agentClientMock) Reboot(ctx context.Context, id string) error {
 }
 
 func (a *agentClientMock) GetPowerManagement(_ context.Context, id string) (*agentpb.GetPowerManagementResponse, error) {
+	if a.getPowerMgmtErr != nil {
+		return nil, a.getPowerMgmtErr
+	}
+
 	val, _ := a.getPowerMgmtResponseMap.Get(id)
 
 	return val, nil
