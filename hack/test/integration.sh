@@ -2,14 +2,26 @@
 
 set -eou pipefail
 
-TALOS_VERSION=1.13.0
+TALOS_VERSION=1.14.1
 SUBNET_CIDR=172.29.0.0/24
 GATEWAY_IP=172.29.0.1
 ARTIFACTS=_out
 NUM_MACHINES=8
 USE_LOCAL_BOOT_ASSETS=false
-IMAGE_FACTORY_BASE_DOMAIN=factory.talos.dev
-IMAGE_FACTORY_PXE_DOMAIN=pxe.factory.talos.dev
+IMAGE_FACTORY_ENTERPRISE_ENV=${IMAGE_FACTORY_ENTERPRISE_ENV:-staging} # staging or prod, selects the enterprise factory and its token
+
+case "${IMAGE_FACTORY_ENTERPRISE_ENV}" in
+  staging) IMAGE_FACTORY_BASE_DOMAIN=factory-enterprise.staging.talos.dev ;;
+  prod) IMAGE_FACTORY_BASE_DOMAIN=factory.siderolabs.com ;;
+  *)
+    echo "unknown image factory enterprise environment: ${IMAGE_FACTORY_ENTERPRISE_ENV}" >&2
+    exit 1
+    ;;
+esac
+
+IMAGE_FACTORY_PXE_DOMAIN="pxe.${IMAGE_FACTORY_BASE_DOMAIN}"
+IMAGE_FACTORY_TOKEN_VAR="IMAGE_FACTORY_ENTERPRISE_${IMAGE_FACTORY_ENTERPRISE_ENV^^}_TOKEN"
+IMAGE_FACTORY_TOKEN="${!IMAGE_FACTORY_TOKEN_VAR:?${IMAGE_FACTORY_TOKEN_VAR} must be set}"
 
 # The integration test drives the provider's real IPMI path against per-machine
 # emulated BMCs (hosted in-process by qemu-up) instead of the fake HTTP power
@@ -162,7 +174,7 @@ echo "Build registry mirror args..."
 if [[ "${CI:-false}" == "true" ]]; then
   REGISTRY_MIRROR_FLAGS=()
 
-  for registry in docker.io k8s.gcr.io quay.io gcr.io ghcr.io registry.k8s.io $IMAGE_FACTORY_BASE_DOMAIN; do
+  for registry in docker.io k8s.gcr.io quay.io gcr.io ghcr.io registry.k8s.io; do
     service="registry-${registry//./-}.ci.svc"
     addr=$(python3 -c "import socket; print(socket.gethostbyname('${service}'))")
 
@@ -182,6 +194,10 @@ export AUTH0_CLIENT_ID="${AUTH0_CLIENT_ID}"
 export AUTH0_DOMAIN="${AUTH0_DOMAIN}"
 
 sqlite_path="${TEST_OUTPUTS_DIR}/sqlite.db"
+
+# Omni reads the image factory token from a file, placed in the mounted directory that is not uploaded as an artifact.
+mkdir -p "${ARTIFACTS}/omni"
+printf '%s' "${IMAGE_FACTORY_TOKEN}" >"${ARTIFACTS}/omni/factory-token"
 
 docker run -d --network host \
   --name omni \
@@ -216,8 +232,9 @@ docker run -d --network host \
   --create-initial-service-account \
   --initial-service-account-key-path=/artifacts/key \
   --join-tokens-mode=strict \
-  --image-factory-address="https://${IMAGE_FACTORY_BASE_DOMAIN}" \
-  --image-factory-pxe-address="https://${IMAGE_FACTORY_PXE_DOMAIN}" \
+  --primary-factory-url="https://${IMAGE_FACTORY_BASE_DOMAIN}" \
+  --primary-factory-token-file=/artifacts/factory-token \
+  --primary-factory-machine-token-ttl=8h \
   --sqlite-storage-path="${sqlite_path}" \
   "${REGISTRY_MIRROR_FLAGS[@]}"
 
