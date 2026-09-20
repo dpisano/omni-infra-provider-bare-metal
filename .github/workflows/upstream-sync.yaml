@@ -126,7 +126,10 @@ jobs:
           BRANCH: ${{ steps.merge.outputs.branch }}
           BEHIND: ${{ steps.fetch.outputs.behind }}
         run: |
+          # gh pr create defaults its target repo to the fork's parent when --repo is omitted,
+          # which is not this repo and which GITHUB_TOKEN has no access to, so it must be explicit.
           gh pr create \
+            --repo "${GITHUB_REPOSITORY}" \
             --base main \
             --head "${BRANCH}" \
             --title "chore: merge ${BEHIND} upstream commit(s)" \
